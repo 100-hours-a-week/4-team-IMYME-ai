@@ -57,6 +57,37 @@ class RunPodClient:
             logger.error(f"RunPod internal error: {e}")
             raise HTTPException(status_code=502, detail=f"RunPod communication error: {str(e)}")
 
+    def warmup_async(self) -> dict:
+        """
+        Send a warmup request to RunPod asynchronously.
+        RunPod에 워밍업 요청을 비동기적으로 보냅니다.
+        """
+        if not self.endpoint_id or not self.api_key:
+            logger.warning("RunPod credentials not set. Skipping warmup.")
+            return {"status": "mock_success", "message": "Mock warmup (no credentials)"}
+
+        payload = {
+            "input": {
+                "warmup": True
+            }
+        }
+        
+        try:
+             # Use 'run' endpoint for async fire-and-forget
+            run_url = f"{self.base_url}/run"
+            logger.info(f"Sending warmup signal to RunPod({self.endpoint_id})...")
+            
+            response = requests.post(run_url, headers=self.headers, json=payload)
+            response.raise_for_status()
+            
+            job_data = response.json()
+            return {"status": "success", "job_id": job_data["id"]}
+            
+        except requests.RequestException as e:
+            logger.error(f"Warmup failed: {e}")
+            # Warmup failure shouldn't crash the server, but we report it
+            return {"status": "failed", "error": str(e)}
+
     def _poll_status(self, job_id: str) -> dict:
         status_url = f"{self.base_url}/status/{job_id}"
         start_time = time.time()
