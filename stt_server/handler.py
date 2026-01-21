@@ -28,6 +28,12 @@ def handler(job):
     audio_url = job_input.get("audio_url")
     language = job_input.get("language")
 
+    # Handle Warmup Request
+    # 워밍업 요청 처리
+    if job_input.get("warmup"):
+        logger.info("Warmup signal received. Returning immediately.")
+        return {"status": "success", "message": "Warmed up"}
+
     if not audio_url:
         return {"error": "Missing 'audio_url' in input"}
 
