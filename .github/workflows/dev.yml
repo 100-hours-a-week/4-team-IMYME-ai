@@ -43,11 +43,11 @@ jobs:
           pip install -r ai_server/requirements.txt
           pip install ruff pytest
 
-      # - name: Run Ruff Lint
-      #   run: ruff check ai_server/
+      - name: Run Ruff Lint
+        run: ruff check ai_server/
 
-      # - name: Run Ruff Format Check
-      #   run: ruff format --check ai_server/
+      - name: Run Ruff Format Check
+        run: ruff format --check ai_server/
 
       - name: Run Tests
         working-directory: ai_server
