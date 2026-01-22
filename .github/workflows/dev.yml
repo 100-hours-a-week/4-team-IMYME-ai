@@ -153,6 +153,17 @@ jobs:
             exit 1
           fi
 
+          # 6. Health Check
+          echo "🔍 Health check"
+          for i in {1..5}; do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null; then
+              echo "✅ Health check passed"
+              break
+            fi
+            echo "⏳ Waiting for server..."
+            sleep 2
+          done
+
           echo "🎉 AI Deploy finished"
           EOF
 
