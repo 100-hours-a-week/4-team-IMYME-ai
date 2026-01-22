@@ -116,6 +116,13 @@ jobs:
           # 2. 가상환경 활성화 & 의존성 설치
           echo "🛠 Install dependencies"
           cd $AI_SERVER_DIR
+
+          # 가상환경이 없으면 생성
+          if [ ! -d ".venv" ]; then
+            echo "📦 Creating virtual environment"
+            python3 -m venv .venv
+          fi
+
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
