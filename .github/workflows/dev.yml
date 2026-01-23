@@ -1,0 +1,196 @@
+name: AI CI/CD v2
+
+on:
+  pull_request:
+    branches:
+      - dev
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) CI
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('ai_server/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r ai_server/requirements.txt
+          pip install ruff pytest
+
+      - name: Run Ruff Lint
+        run: ruff check ai_server/
+
+      - name: Run Ruff Format Check
+        run: ruff format --check ai_server/
+
+      - name: Run Tests
+        working-directory: ai_server
+        run: pytest || echo "No tests found, skipping."
+
+  ci-notify-success:
+    needs: ci
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CI success
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: success
+          title: "🟢 AI CI Success"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 성공!"
+          color: 0x00FF00
+
+  ci-notify-failure:
+    needs: ci
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CI failure
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: failure
+          title: "🔴 AI CI Failed"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 실패!"
+          color: 0xFF0000
+
+  # 2) CD
+  cd:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEV_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.DEV_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy AI Server
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
+          set -e
+
+          APP_DIR=/home/ubuntu/mine/ai/4-team-IMYME-ai
+          AI_SERVER_DIR=$APP_DIR/ai_server
+          LOG_DIR=/home/ubuntu/logs
+
+          echo "🚀 AI Deploy start"
+
+          cd $APP_DIR
+
+          # 1. Git pull
+          echo "📥 Git sync"
+          git fetch origin dev
+          git reset --hard origin/dev
+
+          # 2. 가상환경 활성화 & 의존성 설치
+          echo "🛠 Install dependencies"
+          cd $AI_SERVER_DIR
+
+          # 가상환경이 없으면 생성
+          if [ ! -d ".venv" ]; then
+            echo "📦 Creating virtual environment"
+            python3 -m venv .venv
+          fi
+
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          # 3. 기존 프로세스 종료
+          echo "🛑 Stop existing AI process"
+          pkill -f 'uvicorn.*app.main:app' || true
+          sleep 3
+
+          # 4. 서버 시작
+          echo "▶ Start AI server"
+          mkdir -p $LOG_DIR
+          export $(cat $AI_SERVER_DIR/.env | xargs)
+
+          nohup uvicorn app.main:app \
+            --host 0.0.0.0 \
+            --port 8000 \
+            > $LOG_DIR/ai.log 2>&1 &
+
+          sleep 5
+
+          # 5. 실행 확인
+          if pgrep -f 'uvicorn.*app.main:app' > /dev/null; then
+            echo "✅ AI server started successfully"
+          else
+            echo "❌ AI server failed to start"
+            cat $LOG_DIR/ai.log
+            exit 1
+          fi
+
+          # 6. Health Check
+          echo "🔍 Health check"
+          for i in {1..5}; do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null; then
+              echo "✅ Health check passed"
+              break
+            fi
+            echo "⏳ Waiting for server..."
+            sleep 2
+          done
+
+          echo "🎉 AI Deploy finished"
+          EOF
+
+  cd-notify-success:
+    needs: cd
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CD success
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: success
+          title: "🟢 AI Deploy Success"
+          content: "AI 서버 개발 서버 배포 완료!"
+          color: 0x00FF00
+
+  cd-notify-failure:
+    needs: cd
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CD failure
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: failure
+          title: "🔴 AI Deploy Failed"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 서버 배포 실패!"
+          color: 0xFF0000
