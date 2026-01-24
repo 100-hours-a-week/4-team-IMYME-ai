@@ -21,8 +21,16 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 # Root endpoint for health check
 # 헬스 체크를 위한 루트 엔드포인트
 @app.get("/")
-def health_check():
+def root():
     return {"status": "ok", "service": settings.PROJECT_NAME}
+
+
+@app.get("/health")
+def health_check():
+    """
+    Load Balancer Health Check
+    """
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

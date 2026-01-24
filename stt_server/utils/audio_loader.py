@@ -1,7 +1,7 @@
 import requests
 import tempfile
 import os
-import shutil
+
 
 
 # Service class for handling audio file operations
@@ -29,7 +29,7 @@ class AudioLoader:
                 for chunk in response.iter_content(chunk_size=self.chunk_size):
                     if chunk:
                         temp_file.write(chunk)
-                
+
                 # Return the absolute path of the temporary file
                 # 임시 파일의 절대 경로 반환
                 return temp_file.name
@@ -48,6 +48,7 @@ class AudioLoader:
     def cleanup_file(self, file_path: str):
         if os.path.exists(file_path):
             os.remove(file_path)
+
 
 # Global instance
 audio_loader = AudioLoader()

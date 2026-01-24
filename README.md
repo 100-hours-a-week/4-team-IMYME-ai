@@ -1,4 +1,4 @@
-# Whoo AI Server (RunPod + FastAPI + Whisper)
+# IMYME AI Server (RunPod + FastAPI + Whisper)
 
 이 프로젝트는 `faster-whisper`를 사용한 STT(Speech-to-Text) AI 추론 서버를 구현함.
 시스템은 두 가지 주요 컴포넌트로 나뉨:
@@ -22,7 +22,7 @@
 **중요:** 반드시 터미널에서 **프로젝트 최상위 경로(`runpod_stt`)**에서 명령어를 실행해야 합니다.
 
 ```bash
-docker build --platform linux/amd64 -t whoo-ai-server-worker -f stt_server/Dockerfile .
+docker build --platform linux/amd64 -t imyme-ai-server-worker -f stt_server/Dockerfile .
 ```
 
 *   이 명령어는 `deepdml/faster-whisper-large-v3-turbo-ct2` 모델을 다운로드하여 이미지 안에 포함(Baking)시킴.

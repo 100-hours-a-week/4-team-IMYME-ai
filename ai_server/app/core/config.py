@@ -7,7 +7,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # Application Title
     # 애플리케이션 제목
-    PROJECT_NAME: str = "Whoo AI Server"
+    PROJECT_NAME: str = "IMYME AI Server"
 
     # API Version path
     # API 버전 경로
@@ -20,6 +20,9 @@ class Settings(BaseSettings):
 
     # Timeout for polling
     RUNPOD_TIMEOUT_SECONDS: int = 600
+
+    # Gemini Configuration
+    GEMINI_API_KEY: str = ""
 
     class Config:
         # Load settings from .env file if present

@@ -14,6 +14,7 @@ logger.info("Initializing Inference Service...")
 inference_service.model_service.load_model()
 logger.info("Service initialized.")
 
+
 # Handler function that RunPod calls for each request
 # RunPod가 각 요청에 대해 호출하는 핸들러 함수
 def handler(job):
@@ -22,7 +23,7 @@ def handler(job):
     RunPod serverless 워커를 위한 핸들러.
     """
     job_input = job.get("input", {})
-    
+
     # Extract arguments from input
     # 입력에서 인자 추출
     audio_url = job_input.get("audio_url")
@@ -39,11 +40,11 @@ def handler(job):
 
     try:
         logger.info(f"Processing job {job.get('id')} for URL: {audio_url}")
-        
+
         # Call the transcription service
         # 전사 서비스 호출
         result = inference_service.transcribe(audio_url, language)
-        
+
         # Return serializable dict
         # 직렬화 가능한 딕셔너리 반환
         return result
@@ -51,6 +52,7 @@ def handler(job):
     except Exception as e:
         logger.error(f"Job failed: {e}")
         return {"error": str(e)}
+
 
 # Start the RunPod worker
 # RunPod 워커 시작

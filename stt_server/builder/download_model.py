@@ -7,13 +7,14 @@ import sys
 MODEL_SIZE = "deepdml/faster-whisper-large-v3-turbo-ct2"
 OUTPUT_DIR = "/app/models"
 
+
 def main():
     print(f"Downloading {MODEL_SIZE} model to {OUTPUT_DIR}...")
-    
+
     # Create directory if it doesn't exist
     # 디렉토리가 없으면 생성
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+
     try:
         # Download the model
         # 모델 다운로드
@@ -22,6 +23,7 @@ def main():
     except Exception as e:
         print(f"Failed to download model: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

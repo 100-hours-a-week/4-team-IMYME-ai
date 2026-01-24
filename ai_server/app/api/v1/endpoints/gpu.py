@@ -7,7 +7,7 @@ router = APIRouter()
 
 # POST endpoint for triggering GPU warmup
 # GPU 워밍업을 트리거하기 위한 POST 엔드포인트
-@router.post("/warmup")
+@router.post("/warmup", status_code=202)
 async def trigger_warmup():
     """
     Trigger GPU warmup asynchronously (SYS-001).
