@@ -1,4 +1,4 @@
-name: AI CI/CD v2
+name: AI CI/CD v3
 
 on:
   pull_request:
