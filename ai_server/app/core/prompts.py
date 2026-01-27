@@ -101,7 +101,6 @@ Return ONLY the refined text as a string. Do not include quotes or prefixes.
 """
 
 
-
 KNOWLEDGE_EVALUATION_PROMPT = """
 [Role]
 You are a Knowledge Base Manager. Your goal is to evaluate a specific knowledge candidate against existing similar knowledge entries and decide the appropriate action (`UPDATE`, `IGNORE`) to maintain a high-quality, non-redundant database.
