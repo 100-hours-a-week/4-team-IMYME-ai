@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import transcription, gpu, solo
+from app.api.v1.endpoints import transcription, gpu, solo, knowledge
 
 api_router = APIRouter()
 
@@ -8,3 +8,4 @@ api_router = APIRouter()
 api_router.include_router(transcription.router, tags=["transcription"])
 api_router.include_router(gpu.router, prefix="/gpu", tags=["gpu"])
 api_router.include_router(solo.router, prefix="/solo", tags=["solo"])
+api_router.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"])

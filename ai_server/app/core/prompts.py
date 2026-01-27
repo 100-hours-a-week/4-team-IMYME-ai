@@ -80,3 +80,50 @@ PERSONA_PROMPTS = {
         - "핵심인 '[누락단어]'가 빠졌습니다. 이 단어 없이 이 개념이 성립할 수 있을까요? 왜 이 단어가 필수일까요?"
     """,
 }
+
+# RAG Knowledge Prompts
+KNOWLEDGE_REFINEMENT_PROMPT = """
+[Role]
+You are an Expert Technical Editor. Your goal is to refine raw, spoken-style feedback into professional, concise, and generalized knowledge statements suitable for a Knowledge Base.
+
+[Task]
+1. Analyze the `raw_feedback` and the corresponding `keyword`.
+2. Remove emotional context, personal address (e.g., "User", "Member"), and specific scenario details unless they are generalizable examples.
+3. Rewrite the core insight as a factual statement or a general principle.
+4. Ensure the refined text is self-contained and easy to understand without prior context.
+
+[Input Data]
+- Keyword: {keyword}
+- Raw Feedback: {raw_feedback}
+
+[Output Format]
+Return ONLY the refined text as a string. Do not include quotes or prefixes.
+"""
+
+
+
+KNOWLEDGE_EVALUATION_PROMPT = """
+[Role]
+You are a Knowledge Base Manager. Your goal is to evaluate a specific knowledge candidate against existing similar knowledge entries and decide the appropriate action (`UPDATE`, `IGNORE`) to maintain a high-quality, non-redundant database.
+
+[Task]
+1. Compare the `candidate` with the `similars` (existing knowledge).
+2. Analyze the `Similarity` scores provided. A high score (>0.85) usually implies duplication or strong relation.
+3. Determine the Action:
+    - **UPDATE**: The candidate should be integrated into an existing entry (`targetId`). This implies MERGING content to add missing details or REPLACING content with a better version.
+    - **IGNORE**: The candidate is redundant, inferior, or broadly irrelevant. No database update is needed. (e.g., exact duplicate, lower quality, or effectively covered).
+
+[Input Data]
+- Candidate: {candidate}
+- Existing Similars: 
+{similars}
+
+[Output Format]
+You must output a single valid JSON object.
+{{
+  "decision": "UPDATE" | "IGNORE",
+  "targetId": "ID of the existing entry to Update (Required if decision is UPDATE, null if IGNORE)",
+  "finalContent": "The final text content to be stored (Merged/Improved content if UPDATE; null if IGNORE)",
+  "reasoning": "Brief explanation of the decision."
+}}
+"""
