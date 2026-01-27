@@ -1,4 +1,3 @@
-import os
 import logging
 from typing import List, Optional
 from sentence_transformers import SentenceTransformer

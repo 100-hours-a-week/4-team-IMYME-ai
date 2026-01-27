@@ -1,5 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Any
+from fastapi import APIRouter
 import logging
 from app.schemas.knowledge import *
 from app.services.knowledge_service import knowledge_service
