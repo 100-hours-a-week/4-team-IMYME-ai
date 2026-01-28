@@ -59,5 +59,7 @@
 - **원인**:
     1. **LLM Refinement**: 모든 Raw Feedback에 대해 Gemini가 1차 정제(Refinement)를 수행해야 함.
     2. **Local Embedding Model**: `sentence-transformers` 모델이 CPU/GPU 자원을 사용하여 벡터를 생성하는 연산 비용이 높음.
-- **현황**: 비동기 배치 처리가 필요하며, 실시간성보다는 백그라운드 작업 관점으로 접근 필요.
+- **해결 및 현황**:
+    - **Model 교체**: `gemini-3-pro-preview` -> **`gemini-3-flash-preview`**로 변경.
+    - **결과**: 응답 시간이 **2~3분 -> 7~10초**로 대폭 개선됨. (비동기 배치 처리가 필수는 아니게 됨)
 
