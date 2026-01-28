@@ -25,7 +25,7 @@ class KnowledgeService:
         # Test scripts must ensure environment is set up before importing/initializing.
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.model = genai.GenerativeModel("gemini-3-pro-preview")
+            self.model = genai.GenerativeModel("gemini-3-flash-preview")
         else:
             logger.warning(
                 "GEMINI_API_KEY not found. KnowledgeService may not function correctly."
