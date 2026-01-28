@@ -121,11 +121,12 @@ jobs:
       - name: Deploy AI Server
         run: |
           ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
-          set -e
+          set -euo pipefail
 
           APP_DIR=/home/ubuntu/mine/ai/4-team-IMYME-ai
           AI_SERVER_DIR=$APP_DIR/ai_server
           LOG_DIR=/home/ubuntu/logs
+          SHARED_DIR=/home/ubuntu/mine/ai/shared
 
           echo "🚀 AI Deploy start"
 
@@ -158,7 +159,16 @@ jobs:
           # 4. 서버 시작
           echo "▶ Start AI server"
           mkdir -p $LOG_DIR
-          export $(cat $AI_SERVER_DIR/.env | xargs)
+
+          if [ ! -f "$SHARED_DIR/.env" ]; then
+            echo "❌ shared .env not found: $SHARED_DIR/.env"
+            exit 1
+          fi
+
+          # .env의 KEY=VALUE를 현재 쉘에 로드하고(export) 자식 프로세스(uvicorn)에도 전달
+          set -a
+          source "$SHARED_DIR/.env"
+          set +a
 
           nohup uvicorn app.main:app \
             --host 0.0.0.0 \
