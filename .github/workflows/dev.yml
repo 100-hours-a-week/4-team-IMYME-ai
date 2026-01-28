@@ -5,14 +5,14 @@ on:
     branches:
       - dev
     paths:
-      - '.github/**'
-      - 'ai_server/**'
+      - ".github/**"
+      - "ai_server/**"
   push:
     branches:
       - dev
     paths:
-      - '.github/**'
-      - 'ai_server/**'
+      - ".github/**"
+      - "ai_server/**"
 
 permissions:
   contents: read
@@ -94,7 +94,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       # 0️⃣ Runner IP 획득 및 보안 그룹 추가
       - name: Get Runner IP
         id: ip
@@ -111,7 +110,6 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ap-northeast-2
-
 
       - name: Set up SSH
         run: |
@@ -191,6 +189,47 @@ jobs:
 
           echo "🎉 AI Deploy finished"
           EOF
+
+      # 배포 후 스모크 테스트
+      - name: Post-deploy Smoke Test (AI)
+        run: |
+          set -euo pipefail
+
+          BASE_URL="${{ secrets.DEV_BASE_URL }}"
+
+          echo "🔎 Smoke 1) /ai/health should return 200"
+          curl -fsS "${BASE_URL}/ai/health" >/dev/null
+
+          echo "🔎 Smoke 2) POST ai/api/v1/knowledge/candidates/batch should succeed"
+          # 응답을 파일로 저장하고 HTTP 상태코드 분리
+          HTTP_CODE=$(curl --max-time 180 -sS -o /tmp/ai_batch_resp.json -w "%{http_code}" \
+            -X POST "${BASE_URL}/ai/api/v1/knowledge/candidates/batch" \
+            -H "Content-Type: application/json" \
+            --data '{
+              "items": [
+                {
+                  "id": "history_125",
+                  "keyword": "운영체제",
+                  "rawFeedback": "운영체제"
+                }
+              ]
+            }')
+
+          # 상태코드가 200~299 사이인지 확인.
+          [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || {
+            echo "❌ HTTP $HTTP_CODE"
+            cat /tmp/ai_batch_resp.json
+            exit 1
+          }
+
+          # 응답 JSON 안에 "success": true가 포함되어 있는지 확인.
+          grep -q '"success"[[:space:]]*:[[:space:]]*true' /tmp/ai_batch_resp.json || {
+            echo "❌ success=true not found"
+            cat /tmp/ai_batch_resp.json
+            exit 1
+          }
+
+          echo "✅ AI smoke tests passed"
 
       # 5️⃣ 보안 그룹에서 IP 제거 (항상 실행)
       - name: Remove IP from Security Group
