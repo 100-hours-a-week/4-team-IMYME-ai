@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Root path for reverse proxy (e.g. /ai)
     ROOT_PATH: str = ""
 
+    # Internal Secret for Middleware Auth
+    INTERNAL_SECRET_KEY: str = ""
+
     class Config:
         # Load settings from .env file if present
         # .env 파일이 존재하면 설정을 로드함
