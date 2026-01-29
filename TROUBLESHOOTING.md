@@ -63,3 +63,35 @@
     - **Model 교체**: `gemini-3-pro-preview` -> **`gemini-3-flash-preview`**로 변경.
     - **결과**: 응답 시간이 **2~3분 -> 7~10초**로 대폭 개선됨. (비동기 배치 처리가 필수는 아니게 됨)
 
+
+## 5. 보안 강화: 내부 인증 도입 (Internal Secret)
+- **배경**: AI 서버 API가 외부에 노출될 경우 무분별한 요청이나 오남용을 방지하기 위해 최소한의 인증 장치가 필요.
+- **조치**: 
+    - `main.py`에 Middleware를 추가하여 모든 요청(Health Check 제외)에 대해 `x-internal-secret` 헤더를 검증하도록 변경.
+    - 환경 변수 `INTERNAL_SECRET_KEY`를 통해 비밀키를 관리.
+
+
+
+## 6. API Access Denied (403 Forbidden)
+**증상**: API 호출 시 `403 Forbidden` 에러와 `{"detail": "Access Denied: Invalid Internal Secret"}` 응답 발생.
+
+**원인**: AI 서버에 내부 인증 미들웨어가 적용되어 올바른 `x-internal-secret` 헤더 없이 요청했기 때문.
+
+**해결 방법**:
+1. **서버 설정**: 파일에 비밀키 정의
+   ```bash
+   SECRET_KEY=your-secret-key
+   ```
+2. **클라이언트 요청**: HTTP Header에 `x-internal-secret` 추가
+   ```http
+   x-internal-secret: your-secret-key
+   ```
+3. **Swagger UI 사용 시**:
+    - **증상**: Swagger에서 API 테스트 시 `Authorize` 버튼이 없어서 헤더를 넣을 수 없고 `403` 에러 발생.
+    - **해결**: `main.py`에 `APIKeyHeader` 설정을 추가하여 Swagger UI에 자물쇠 버튼을 활성화해야 함.
+      ```python
+      from fastapi.security import APIKeyHeader
+      api_key_header = APIKeyHeader(name="x-internal-secret", auto_error=False)
+      app = FastAPI(..., dependencies=[Security(api_key_header)])
+      ```
+    - **적용 범위**: 위 코드가 적용된 서버라면 **로컬(Local)과 배포된 서버(Remote) 모두 동일하게 적용됨**. Swagger 우측 상단 `Authorize` 버튼에 키를 입력하면 정상 호출 가능.

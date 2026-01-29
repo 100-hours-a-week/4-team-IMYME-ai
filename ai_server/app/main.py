@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Depends, Security
+from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from app.api.v1.router import api_router
@@ -18,7 +18,7 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     root_path=settings.ROOT_PATH,
-    dependencies=[Security(api_key_header)], # Add Global Security
+    dependencies=[Security(api_key_header)],  # Add Global Security
 )
 
 
