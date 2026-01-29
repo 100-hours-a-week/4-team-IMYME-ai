@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from app.api.v1.router import api_router
 from app.core.config import settings
 import logging
@@ -8,12 +9,16 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whoo-ai-server")
 
+# Swagger Auth
+api_key_header = APIKeyHeader(name="x-internal-secret", auto_error=False)
+
 # Initialize FastAPI app
 # FastAPI 앱 초기화
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     root_path=settings.ROOT_PATH,
+    dependencies=[Security(api_key_header)],  # Add Global Security
 )
 
 
