@@ -123,72 +123,122 @@ jobs:
           ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
           set -euo pipefail
 
-          APP_DIR=/home/ubuntu/mine/ai/4-team-IMYME-ai
-          AI_SERVER_DIR=$APP_DIR/ai_server
-          LOG_DIR=/home/ubuntu/logs
-          SHARED_DIR=/home/ubuntu/mine/ai/shared
+          APP_ROOT=/home/ubuntu/mine/ai
+          RELEASES_DIR=$APP_ROOT/releases
+          SHARED_DIR=$APP_ROOT/shared
+          CURRENT_LINK=$APP_ROOT/current
 
-          echo "🚀 AI Deploy start"
+          # 릴리즈 식별자(초 단위)
+          RELEASE_ID=$(date +%Y%m%d%H%M%S)
+          RELEASE_DIR=$RELEASES_DIR/$RELEASE_ID
 
-          cd $APP_DIR
+          # 로그/환경변수/프로세스 관리 파일
+          LOG_DIR=$SHARED_DIR/logs
+          LOG_FILE=$LOG_DIR/ai.log
+          ENV_FILE=$SHARED_DIR/.env
+          PID_FILE=$SHARED_DIR/ai.pid
 
-          # 1. Git pull
-          echo "📥 Git sync"
-          git fetch origin dev
-          git reset --hard origin/dev
+          # venv는 shared에 1개만 유지(릴리즈별 생성 X)
+          VENV_DIR=$SHARED_DIR/.venv
 
-          # 2. 가상환경 활성화 & 의존성 설치
-          echo "🛠 Install dependencies"
-          cd $AI_SERVER_DIR
+          # 원격 레포 URL
+          REPO_URL="https://github.com/100-hours-a-week/4-team-IMYME-ai.git"
+          BRANCH="dev"
 
-          # 가상환경이 없으면 생성
-          if [ ! -d ".venv" ]; then
-            echo "📦 Creating virtual environment"
-            python3 -m venv .venv
-          fi
+          echo "🚀 AI Deploy start (release/current)"
 
-          source .venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          mkdir -p "$RELEASES_DIR" "$SHARED_DIR" "$LOG_DIR"
 
-          # 3. 기존 프로세스 종료
-          echo "🛑 Stop existing AI process"
-          pkill -f 'uvicorn.*app.main:app' || true
-          sleep 3
-
-          # 4. 서버 시작
-          echo "▶ Start AI server"
-          mkdir -p $LOG_DIR
-
+          # 환경변수 파일 존재 확인
           if [ ! -f "$SHARED_DIR/.env" ]; then
             echo "❌ shared .env not found: $SHARED_DIR/.env"
             exit 1
           fi
 
-          # .env의 KEY=VALUE를 현재 쉘에 로드하고(export) 자식 프로세스(uvicorn)에도 전달
+          # 새 릴리즈 폴더에 코드 스냅샷 저장
+          echo "📦 Create new release: $RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+
+          echo "📥 Clone repo snapshot (depth=1, branch=$BRANCH)"
+          git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$RELEASE_DIR"
+          # --depth 1 : 최신 커밋만 받아서 빠름
+          # 릴리즈 폴더에 “그 시점 코드”가 그대로 남음 → 롤백 가능해짐
+
+          # 가상환경 준비 + 의존성 설치
+          echo "🛠 Prepare venv: $VENV_DIR"
+
+          if [ ! -d "$VENV_DIR" ]; then
+            echo "📦 Creating shared virtual environment"
+            python3 -m venv "$VENV_DIR"
+          fi
+
+          # venv 활성화
+          source "$VENV_DIR/bin/activate"
+
+          echo "📦 Install dependencies"
+          pip install --upgrade pip
+
+          # requirements는 “새 릴리즈(current 기준)”의 파일을 기준으로 설치/업데이트
+          pip install -r "$RELEASE_DIR/ai_server/requirements.txt"
+
+          # 기존 프로세스 종료 (pid 파일 기준)
+          echo "🛑 Stop existing AI process (pid file)"
+          if [ -f "$PID_FILE" ]; then
+            OLD_PID=$(cat "$PID_FILE" || true)
+            if [ -n "${OLD_PID:-}" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+              echo " - stopping pid=$OLD_PID"
+              kill "$OLD_PID" || true
+
+              # 종료 확인(최대 10초)
+              for i in {1..10}; do
+                if kill -0 "$OLD_PID" 2>/dev/null; then
+                  echo "   waiting... ($i/10)"
+                  sleep 1
+                else
+                  echo "   stopped"
+                  break
+                fi
+              done
+
+              # 그래도 살아있으면 강제 종료
+              if kill -0 "$OLD_PID" 2>/dev/null; then
+                echo " - still alive, SIGKILL"
+                kill -9 "$OLD_PID" || true
+              fi
+            else
+              echo " - pid file exists but process not running (pid=$OLD_PID)"
+            fi
+          else
+            echo " - pid file not found (maybe not running)"
+          fi
+
+          # current 심볼릭 링크 교체 
+          echo "🔁 Switch current -> $RELEASE_DIR"
+          ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
+
+          # 서버 시작
+          echo "▶ Start AI server (current)"
+
+          # env를 export 상태로 로드하여 uvicorn에 전달
           set -a
-          source "$SHARED_DIR/.env"
+          source "$ENV_FILE"
           set +a
+
+          # current 기준으로 실행
+          cd "$CURRENT_LINK/ai_server"
 
           nohup uvicorn app.main:app \
             --host 0.0.0.0 \
             --port 8000 \
-            > $LOG_DIR/ai.log 2>&1 &
+            >> "$LOG_FILE" 2>&1 </dev/null &
 
-          sleep 5
+          NEW_PID=$!
+          echo "$NEW_PID" > "$PID_FILE"
+          echo "✅ AI server started (pid=$NEW_PID)"
 
-          # 5. 실행 확인
-          if pgrep -f 'uvicorn.*app.main:app' > /dev/null; then
-            echo "✅ AI server started successfully"
-          else
-            echo "❌ AI server failed to start"
-            cat $LOG_DIR/ai.log
-            exit 1
-          fi
-
-          # 6. Health Check
+          # 헬스체크 (로컬)
           echo "🔍 Health check"
-          for i in {1..5}; do
+          for i in {1..10}; do
             if curl -sf http://127.0.0.1:8000/ > /dev/null; then
               echo "✅ Health check passed"
               break
@@ -196,6 +246,16 @@ jobs:
             echo "⏳ Waiting for server..."
             sleep 2
           done
+
+          if ! curl -sf http://127.0.0.1:8000/ > /dev/null; then
+            echo "❌ Health check failed"
+            tail -n 200 "$LOG_FILE" || true
+            exit 1
+          fi
+
+          # 오래된 릴리즈 정리 (최근 3개만 보관)
+          echo "🧹 Cleanup old releases (keep last 3)"
+          ls -1dt "$RELEASES_DIR"/* | tail -n +4 | xargs -r rm -rf
 
           echo "🎉 AI Deploy finished"
           EOF
@@ -215,6 +275,7 @@ jobs:
           HTTP_CODE=$(curl --max-time 180 -sS -o /tmp/ai_batch_resp.json -w "%{http_code}" \
             -X POST "${BASE_URL}/ai/api/v1/knowledge/candidates/batch" \
             -H "Content-Type: application/json" \
+            -H "x-internal-secret: ${{ secrets.INTERNAL_SECRET_KEY }}" \
             --data '{
               "items": [
                 {
