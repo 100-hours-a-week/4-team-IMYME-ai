@@ -25,14 +25,14 @@ async def submit_analysis(
     - 즉시 202 Accepted와 함께 taskId를 반환합니다.
     """
     try:
-        # 1. Create Task (PENDING)
-        task_id = task_service.create_task()
+        # 1. Create Task (PENDING) using client-provided attemptId
+        attempt_id = task_service.create_task(request.attempt_id)
 
         # 2. Register Background Task
         # AnalysisService orchestrates Scoring and Feedback in parallel
         background_tasks.add_task(
             analysis_service.analyze_text_background,
-            task_id=task_id,
+            task_id=str(attempt_id),
             user_text=request.user_text,
             criteria=request.criteria,
             history=request.history,
@@ -40,7 +40,7 @@ async def submit_analysis(
 
         return SoloSubmissionResponse(
             success=True,
-            data=SoloSubmissionData(taskId=task_id, status="PENDING"),
+            data=SoloSubmissionData(attemptId=attempt_id, status="PENDING"),
             error=None,
         )
 
@@ -61,13 +61,13 @@ async def submit_analysis(
         )
 
 
-@router.get("/submissions/{taskId}", response_model=SoloResultResponse)
-async def get_analysis_result(taskId: str = Path(..., description="작업 ID")):
+@router.get("/submissions/{attemptId}", response_model=SoloResultResponse)
+async def get_analysis_result(attempt_id: int = Path(..., alias="attemptId", description="시도 ID")):
     """
     [SOLO-002] 분석 결과 조회 (Polling)
-    - taskId를 통해 현재 작업 상태나 완료된 결과를 조회합니다.
+    - attemptId를 통해 현재 작업 상태나 완료된 결과를 조회합니다.
     """
-    task_data = task_service.get_task_status(taskId)
+    task_data = task_service.get_task_status(attempt_id)
 
     # To match strictly:
     if not task_data:
@@ -93,7 +93,7 @@ async def get_analysis_result(taskId: str = Path(..., description="작업 ID")):
         return SoloResultResponse(
             success=False,
             data=SoloResultData(
-                taskId=task_data["taskId"], status="FAILED", result=None
+                attemptId=attempt_id, status="FAILED", result=None
             ),
             error=task_data.get("error"),  # {"code":..., "msg":...}
         )
@@ -102,7 +102,7 @@ async def get_analysis_result(taskId: str = Path(..., description="작업 ID")):
     return SoloResultResponse(
         success=True,
         data=SoloResultData(
-            taskId=task_data["taskId"],
+            attemptId=attempt_id,
             status=task_data["status"],
             result=task_data.get("result"),  # None if PROCESSING
         ),

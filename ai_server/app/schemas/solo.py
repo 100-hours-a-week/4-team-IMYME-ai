@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Any, Dict
 
 # --- Request Schemas ---
@@ -9,6 +9,7 @@ class SoloSubmissionRequest(BaseModel):
     SOLO-001: 심층 분석 요청 Body 스키마
     """
 
+    attempt_id: int = Field(..., alias="attemptId", description="시도 ID")
     user_text: str = Field(
         ...,
         alias="userText",
@@ -18,8 +19,7 @@ class SoloSubmissionRequest(BaseModel):
     criteria: Dict[str, Any] = Field(..., description="정답지 및 모델 가이드 (JSON)")
     history: List[Dict[str, Any]] = Field(..., description="이전 피드백 기록 리스트")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # --- Response Data Schemas (Inside 'data' field) ---
@@ -30,7 +30,7 @@ class SoloSubmissionData(BaseModel):
     SOLO-001: 접수 성공 시 data 필드
     """
 
-    task_id: str = Field(..., alias="taskId")
+    attempt_id: int = Field(..., alias="attemptId")
     status: str = Field(..., description="PENDING")
 
     class Config:
@@ -63,8 +63,7 @@ class SoloResultDetail(BaseModel):
     level: int = Field(..., ge=1, le=5, description="레벨 (1-5)")
     feedback: FeedbackDetail
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SoloResultData(BaseModel):
@@ -72,12 +71,11 @@ class SoloResultData(BaseModel):
     SOLO-002: 조회 결과 data 필드
     """
 
-    task_id: str = Field(..., alias="taskId")
+    attempt_id: int = Field(..., alias="attemptId")
     status: str = Field(..., description="PROCESSING | COMPLETED | FAILED")
     result: Optional[SoloResultDetail] = None
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # --- Standard Response Envelopes ---

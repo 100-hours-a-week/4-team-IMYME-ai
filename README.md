@@ -108,6 +108,7 @@ docker build --platform linux/amd64 -t imyme-ai-server-worker -f stt_server/Dock
 **Request Body (Example: 프로세스 설명)**
 ```json
 {
+  "attemptId": 101,
   "userText": "프로세스는 현재 실행 중인 프로그램을 의미합니다. 프로그램 자체가 그냥 코드 덩어리라면, 프로세스는 메모리에 올라가서 실제로 작업을 수행하는 동적인 상태라고 볼 수 있어요. 각 프로세스는 독립적인 메모리 영역을 가집니다.",
   "criteria": {
     "keyword": "Process",
@@ -122,7 +123,7 @@ docker build --platform linux/amd64 -t imyme-ai-server-worker -f stt_server/Dock
 {
   "success": true,
   "data": {
-    "taskId": "task-uuid-1234",
+    "attemptId": 101,
     "status": "PENDING"
   },
   "error": null
