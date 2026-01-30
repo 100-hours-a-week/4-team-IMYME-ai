@@ -62,7 +62,9 @@ async def submit_analysis(
 
 
 @router.get("/submissions/{attemptId}", response_model=SoloResultResponse)
-async def get_analysis_result(attempt_id: int = Path(..., alias="attemptId", description="시도 ID")):
+async def get_analysis_result(
+    attempt_id: int = Path(..., alias="attemptId", description="시도 ID"),
+):
     """
     [SOLO-002] 분석 결과 조회 (Polling)
     - attemptId를 통해 현재 작업 상태나 완료된 결과를 조회합니다.
@@ -92,9 +94,7 @@ async def get_analysis_result(attempt_id: int = Path(..., alias="attemptId", des
     if task_data.get("status") == "FAILED":
         return SoloResultResponse(
             success=False,
-            data=SoloResultData(
-                attemptId=attempt_id, status="FAILED", result=None
-            ),
+            data=SoloResultData(attemptId=attempt_id, status="FAILED", result=None),
             error=task_data.get("error"),  # {"code":..., "msg":...}
         )
 
