@@ -212,6 +212,31 @@ jobs:
             echo " - pid file not found (maybe not running)"
           fi
 
+          # 포트 점유 프로세스 무조건 종료
+          PIDS=$(lsof -t -i :8000 -nP 2>/dev/null || true)
+
+          if [ -n "${PIDS:-}" ]; then
+            echo " - found: $PIDS"
+            kill $PIDS || true
+
+            # 최대 10초 대기
+            for i in {1..10}; do
+              if lsof -t -i :8000 -nP >/dev/null 2>&1; then
+                echo "   waiting port release... ($i/10)"
+                sleep 1
+              else
+                echo "   port 8000 released"
+                break
+              fi
+            done
+
+            # 아직도 점유 중이면 강제 종료
+            if lsof -t -i :8000 -nP >/dev/null 2>&1; then
+              echo " - still in use, SIGKILL"
+              kill -9 $(lsof -t -i :8000 -nP 2>/dev/null || true) || true
+            fi
+          fi
+
           # current 심볼릭 링크 교체 
           echo "🔁 Switch current -> $RELEASE_DIR"
           ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
