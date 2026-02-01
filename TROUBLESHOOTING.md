@@ -110,5 +110,44 @@
 ### 7.3. 해결 및 완화 (Mitigation)
 1.  **서버 리소스 증설**: 근본적으로는 모델을 감당할 수 있는 충분한 VRAM/RAM이 있는 인스턴스로 업그레이드.
 2.  **스왑 메모리 설정**: EC2 인스턴스에 스왑 메모리를 설정하여 메모리 부족 시 디스크를 메모리처럼 사용하도록 함.
-    
+
+---
+
+## 8. RAG Hybrid Search Similarity Score 이슈
+
+### 8.1. 증상 (Symptoms)
+- **상황**: `/api/v1/knowledge/evaluations` 엔드포인트로 전송되는 요청에서 `similars` 배열의 모든 항목이 `similarity: 0.0`으로 고정되어 있음.
+- **영향**: AI 서버가 정확한 유사도 점수를 받지 못해 중복 판단(UPDATE/IGNORE) 정확도가 저하됨.
+
+### 8.2. 원인 (Root Cause)
+1.  **Repository 반환 타입 한계**:
+    - `KnowledgeRepository.hybridRRFSearch` 메소드가 `KnowledgeBase` **엔티티**를 반환하도록 설계됨.
+    - 엔티티는 DB 테이블과 1:1 매핑되므로, SQL 쿼리 실행 중 계산된 **임시 값(`similarity`, `rrf_score`)을 담을 필드가 없음**.
+    - 결과적으로 쿼리 내부에서 점수를 계산하고 정렬에 사용하지만, 최종 반환 시 점수 정보가 소실됨.
+
+2.  **Controller의 하드코딩**:
+    - `IntegrationTestController`에서 검색 결과를 `EvaluateSimilarInput`으로 변환할 때, 유사도 정보가 없어 `similarity: 0.0`으로 하드코딩됨.
+
+### 8.3. 해결 (Solution)
+1.  **Repository 수정** (`KnowledgeRepository.java`):
+    - 새로운 메소드 `hybridSearchWithScore` 추가.
+    - SQL 쿼리의 `SELECT` 절에 `COALESCE(sr.similarity, 0.0) AS similarity` 포함.
+    - `semantic_ranked` CTE에 `similarity` 컬럼 추가.
+    - 반환 타입을 `List<SimilarKnowledge>` DTO로 변경하여 점수 정보 포함.
+
+2.  **Controller 수정** (`IntegrationTestController.java`):
+    - `hybridRRFSearch` → `hybridSearchWithScore` 호출로 변경.
+    - DTO에서 실제 유사도 값(`dto.getSimilarity()`)을 추출하여 AI 서버로 전송.
+
+### 8.4. 검증 (Verification)
+수정 후 로그 확인 결과, 정상적인 유사도 점수가 출력됨:
+```json
+{
+  "similars": [
+    { "id": "11", "similarity": 0.6684612032542473 },
+    { "id": "13", "similarity": 0.34919357016201613 },
+    { "id": "12", "similarity": 0.2953150184358715 }
+  ]
+}
+```
 

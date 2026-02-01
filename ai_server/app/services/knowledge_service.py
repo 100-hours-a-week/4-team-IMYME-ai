@@ -136,7 +136,9 @@ class KnowledgeService:
 
             return KnowledgeEvaluationResult(
                 decision=decision,
-                targetId=data.get("targetId"),
+                targetId=str(data.get("targetId"))
+                if data.get("targetId") is not None
+                else None,
                 finalContent=final_content,
                 finalVector=final_vector,
                 reasoning=data.get("reasoning", ""),

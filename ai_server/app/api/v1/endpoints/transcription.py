@@ -42,7 +42,17 @@ async def transcribe_audio(request: TranscriptionRequest):
 
     # 2. Validate File Extension (UNSUPPORTED_FORMAT - 400)
     # 파일 확장자 검증
-    supported_formats = [".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma"]
+    supported_formats = [
+        ".mp3",
+        ".wav",
+        ".m4a",
+        ".flac",
+        ".ogg",
+        ".aac",
+        ".wma",
+        ".webm",
+        ".mp4",
+    ]
     # Check if URL ends with supported extension (ignoring query params)
     clean_url = request.audio_url.split("?")[0].lower()
     if not any(clean_url.endswith(ext) for ext in supported_formats):
