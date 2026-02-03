@@ -366,5 +366,5 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: failure
           title: "🔴 AI Deploy Failed"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 서버 배포 실패!"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 개발 서버 배포 실패!"
           color: 0xFF0000
