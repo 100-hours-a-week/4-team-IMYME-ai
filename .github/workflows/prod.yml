@@ -3,13 +3,13 @@ name: AI CI/CD v3
 on:
   pull_request:
     branches:
-      - dev
+      - main
     paths:
       - ".github/**"
       - "ai_server/**"
   push:
     branches:
-      - dev
+      - main
     paths:
       - ".github/**"
       - "ai_server/**"
@@ -90,7 +90,7 @@ jobs:
   # 2) CD
   cd:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
@@ -116,11 +116,11 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.DEV_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.DEV_SERVER_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.PROD_SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy AI Server
         run: |
-          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
+          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.PROD_SERVER_HOST }} 'bash -s' <<'EOF'
           set -euo pipefail
 
           APP_ROOT=/home/ubuntu/mine/ai
@@ -143,7 +143,7 @@ jobs:
 
           # 원격 레포 URL
           REPO_URL="https://github.com/100-hours-a-week/4-team-IMYME-ai.git"
-          BRANCH="dev"
+          BRANCH="main"
 
           echo "🚀 AI Deploy start (release/current)"
 
@@ -290,7 +290,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BASE_URL="${{ secrets.DEV_BASE_URL }}"
+          BASE_URL="${{ secrets.PROD_BASE_URL }}"
 
           echo "🔎 Smoke 1) /ai/health should return 200"
           curl -fsS "${BASE_URL}/ai/health" >/dev/null
@@ -352,7 +352,7 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: success
           title: "🟢 AI Deploy Success"
-          content: "AI 서버 개발 서버 배포 완료!"
+          content: "AI 서버 운영 서버 배포 완료!"
           color: 0x00FF00
 
   cd-notify-failure:
@@ -366,5 +366,5 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: failure
           title: "🔴 AI Deploy Failed"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 개발 서버 배포 실패!"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 운영 서버 배포 실패!"
           color: 0xFF0000
