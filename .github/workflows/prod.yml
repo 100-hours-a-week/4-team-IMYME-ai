@@ -143,7 +143,7 @@ jobs:
 
           # 원격 레포 URL
           REPO_URL="https://github.com/100-hours-a-week/4-team-IMYME-ai.git"
-          BRANCH="main"
+          BRANCH="dev"
 
           echo "🚀 AI Deploy start (release/current)"
 
