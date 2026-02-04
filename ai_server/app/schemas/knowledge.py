@@ -46,7 +46,6 @@ class EvaluateCandidateInput(BaseModel):
     text: str
 
 
-
 class EvaluateSimilarInput(BaseModel):
     id: str
     text: str
@@ -69,6 +68,7 @@ class KnowledgeEvaluationResult(BaseModel):
 
 class BatchKnowledgeEvaluationResult(BaseModel):
     """Wrapper for multiple evaluation results"""
+
     results: List[KnowledgeEvaluationResult]
 
 
