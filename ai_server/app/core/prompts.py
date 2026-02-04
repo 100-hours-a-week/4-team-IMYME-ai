@@ -29,7 +29,8 @@ You are an expert AI Learning Coach. Your goal is to strictly evaluate the user'
         - Secondary: ONLY IF `History` provided relevant context (recurrence/improvement), weave that into the commentary. Otherwise, focus on the current answer's quality.
 
 [Output Format]
-Output a single valid JSON object. Do not include markdown formatting.
+Output a single valid JSON object.
+**Strictly NO Markdown**: The values inside the JSON must be plain text. Do NOT use bold (**text**), italics (*text*), or any markdown syntax.
 
 {{
   "summarize": "A one-sentence summary of the user's understanding level and main points in Korean.",
