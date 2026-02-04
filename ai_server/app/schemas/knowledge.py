@@ -44,13 +44,14 @@ class RefineCandidatesResponse(BaseModel):
 
 class EvaluateCandidateInput(BaseModel):
     text: str
-    sourceId: str
+
 
 
 class EvaluateSimilarInput(BaseModel):
     id: str
     text: str
     similarity: float
+    keyword: str  # Keyword name for topic verification
 
 
 class KnowledgeEvaluationRequest(BaseModel):
@@ -66,7 +67,12 @@ class KnowledgeEvaluationResult(BaseModel):
     reasoning: str
 
 
+class BatchKnowledgeEvaluationResult(BaseModel):
+    """Wrapper for multiple evaluation results"""
+    results: List[KnowledgeEvaluationResult]
+
+
 class KnowledgeEvaluationResponse(BaseModel):
     success: bool = True
-    data: KnowledgeEvaluationResult
+    data: BatchKnowledgeEvaluationResult
     error: Optional[Any] = None

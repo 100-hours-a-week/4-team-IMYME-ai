@@ -109,39 +109,54 @@ Return ONLY the refined text as a string. Do not include quotes or prefixes.
 
 KNOWLEDGE_EVALUATION_PROMPT = """
 ### Role
-You are a Precision Knowledge Base Curator. Your goal is to strictly uphold the authority of the existing database while surgically integrating *only* high-value new information from candidates.
+You are a **Senior Knowledge Base Auditor**. Your integrity allows ZERO false merges.
+Your task is to review a candidate update against a list of existing database records.
 
 ### Task
-Evaluate the `candidate` against `similars`. Extract ONLY valuable new details and merge them into the existing text.
+For EACH item in `similars`, perform an independent 3-step audit to decide whether to UPDATE or IGNORE.
 
 ### Input Data
 - Candidate (New Data): {candidate}
-- Existing Similars (Context): 
+- Existing Similars (Database Records with Keywords):
 {similars}
 
-### Decision Logic (Strict Order)
-1. **Relevance Check**: If `candidate` has low semantic similarity to `similars`, output **IGNORE**.
-2. **Conflict Resolution**: **Existing Similars are the Truth**. Discard conflicting parts of the `candidate`.
-3. **Value Extraction (The 20% Rule)**: 
-   - Filter out 80% fluff/redundancy. Keep only the 20% useful nuggets (new codes, steps, params).
-   - If at least one useful nugget exists, decision is **UPDATE**.
+### Decision Protocol (Apply to EACH Similar Independently)
 
-### Content Merging Guidelines (Critical for UPDATE)
-- **Surgical Integration**: Ideally, weave the new info into existing paragraphs/sections where it contextually belongs.
-- **Logical Expansion (New Sections)**: 
-   - IF the new information represents a **distinct new step, phase, or topic** that does not fit into existing sections, YOU MAY add a new header at the end (e.g., if `## 3` exists, create `## 4`).
-   - The new header must follow the **existing hierarchy style** (e.g., same level of `#`).
-- **NO Lazy Appending**: Do NOT simply dump the full text at the bottom. Only add a new section if it is structurally necessary.
-- **Context Preservation**: Ensure natural transitions.
+**Step 1: Contextual Compatibility Check (Expert Judgment)**
+- *Thinking*: "Is this candidate **compatible** with this **Item's Keyword context**? Does it belong here?"
+- **Strict Rule**: Mismatching Language/Framework (e.g., Python vs Java) -> **IGNORE** (Unless explicitly a comparison).
+- **Flexible Rule**: Same Topic but different aspect? -> **CHECK** if it adds value.
+- *Decision*: If completely unrelated topic -> **IGNORE**. If related and useful -> **PROCEED to Step 2**.
+
+**Step 2: Conflict & Truth Verification**
+- *Thinking*: "Does the candidate contradict established facts in this ID?"
+- **Constraint**: Existing DB is the Source of Truth unless candidate is more specific.
+- *Action*: If Conflict -> **IGNORE**.
+
+**Step 3: Holistic Integration (The 1% Rule)**
+- *Thinking*: "Does this add value without breaking the flow?"
+- **Extraction**: Look for ANY missing detail (code, parameter, explanation, example).
+- *Action*: If Yes -> **UPDATE** with integrated content. If No -> **IGNORE**.
+
+### Content Merging Guidelines (For UPDATE decisions)
+- **Surgical Integration**: Weave new info into existing paragraphs/sections where contextually appropriate.
+- **Logical Expansion**: Only add new sections if the information represents a distinct new concept.
+- **NO Lazy Appending**: Do NOT dump full text at bottom. Integrate naturally.
+- **Context Preservation**: Maintain flow and coherence.
 
 ### Output Format
-Output a single valid JSON object.
+Output a single valid JSON object with a `results` array. Each element represents the decision for one similar item.
 
 {{
-  "thought_process": "1. Conflict Check: [Result]. 2. Extraction: [Details]. 3. Placement: Decided to [Insert into Section X] OR [Create New Section Y].",
-  "decision": "UPDATE" | "IGNORE",
-  "targetId": "ID of the entry to Update (null if IGNORE)",
-  "finalContent": "The complete Markdown text with new info integrated. (Required if UPDATE, null if IGNORE)",
-  "reasoning": "Explain extraction and placement logic."
+  "results": [
+    {{
+      "targetId": "ID from similar item",
+      "decision": "UPDATE" | "IGNORE",
+      "finalContent": "Complete integrated Markdown text (required if UPDATE, null if IGNORE)",
+      "reasoning": "[Compatibility: OK/FAIL] -> [Conflict: OK/FAIL] -> [Value: Details] -> [Action: UPDATE/IGNORE]"
+    }}
+  ]
 }}
+
+**CRITICAL**: You MUST evaluate EVERY item in `similars` and include it in the results array.
 """

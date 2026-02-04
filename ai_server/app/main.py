@@ -7,7 +7,7 @@ import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("whoo-ai-server")
+logger = logging.getLogger("imyme-ai-server")
 
 # Swagger Auth
 api_key_header = APIKeyHeader(name="x-internal-secret", auto_error=False)

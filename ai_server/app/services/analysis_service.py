@@ -29,16 +29,22 @@ class AnalysisService:
         try:
             # 1. Validation Logic
             if len(user_text.strip()) < 5:
-                # Logic Failure: TEXT_TOO_SHORT
-                logger.warning(f"Task {task_id}: Text too short.")
-                task_store.save_task(
-                    task_id,
-                    "FAILED",
-                    error={
-                        "code": "TEXT_TOO_SHORT",
-                        "msg": "내용이 너무 짧아 분석할 수 없습니다.",
+                # Skip LLM and return hardcoded feedback
+                logger.info(f"Task {task_id}: Text too short (< 5 chars). Returning hardcoded feedback.")
+                
+                final_result = {
+                    "overall_score": 0,
+                    "level": 1,
+                    "feedback": {
+                        "summarize": "입력된 내용이 너무 짧거나 인식이 되지 않았습니다.",
+                        "keyword": ["음성 인식 실패", "짧은 답변"],
+                        "facts": "분석할 텍스트가 부족합니다.",
+                        "understanding": "사용자의 의도를 파악하기 어렵습니다.",
+                        "personalized": "조금 더 길게 말씀해주시거나, 다시 시도 부탁드립니다."
                     },
-                )
+                }
+                
+                task_store.save_task(task_id, "COMPLETED", result=final_result)
                 return
 
             # 2. Parallel Execution (Scoring + Feedback)

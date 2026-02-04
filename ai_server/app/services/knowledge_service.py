@@ -11,6 +11,7 @@ from app.schemas.knowledge import (
     EvaluateCandidateInput,
     EvaluateSimilarInput,
     KnowledgeEvaluationResult,
+    BatchKnowledgeEvaluationResult,
     KnowledgeAction,
 )
 from app.services.embedding_service import embedding_service
@@ -25,7 +26,10 @@ class KnowledgeService:
         # Test scripts must ensure environment is set up before importing/initializing.
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.model = genai.GenerativeModel("gemini-3-flash-preview")
+            # 1. Refinement용 Flash 모델 (단순 정제, 속도/비용 중시)
+            self.flash_model = genai.GenerativeModel("gemini-3-flash-preview")
+            # 2. Evaluation용 Pro 모델 (논리적 추론, 정확도 중시)
+            self.pro_model = genai.GenerativeModel("gemini-3-pro-preview")
         else:
             logger.warning(
                 "GEMINI_API_KEY not found. KnowledgeService may not function correctly."
@@ -46,7 +50,7 @@ class KnowledgeService:
                 prompt = KNOWLEDGE_REFINEMENT_PROMPT.format(
                     keyword=item.keyword, raw_feedback=item.rawFeedback
                 )
-                response = await self.model.generate_content_async(prompt)
+                response = await self.flash_model.generate_content_async(prompt)
                 refined_text = response.text.strip()
 
                 # 2. Vectorize
@@ -78,18 +82,17 @@ class KnowledgeService:
 
     async def evaluate_knowledge(
         self, candidate: EvaluateCandidateInput, similars: List[EvaluateSimilarInput]
-    ) -> KnowledgeEvaluationResult:
+    ) -> BatchKnowledgeEvaluationResult:
         """
         Evaluates a candidate against existing similar knowledge entries.
-        Decides to UPDATE or IGNORE.
+        Returns multiple decisions, one for each similar item.
         """
         try:
-            # Formulate Prompt
-            # Include similarity score in the info
+            # Formulate Prompt with keyword context
             similars_text_list = []
             for s in similars:
                 similars_text_list.append(
-                    f"- ID: {s.id} (Similarity: {s.similarity:.4f})\n  Content: {s.text}"
+                    f"- ID: {s.id} (Keyword: {s.keyword}, Similarity: {s.similarity:.4f})\n  Content: {s.text}"
                 )
 
             similars_text = "\n".join(similars_text_list)
@@ -102,7 +105,7 @@ class KnowledgeService:
                 candidate=candidate.text, similars=similars_text
             )
 
-            response = await self.model.generate_content_async(prompt)
+            response = await self.pro_model.generate_content_async(prompt)
 
             # Parse JSON
             cleaned_text = (
@@ -114,35 +117,45 @@ class KnowledgeService:
                 logger.error(f"Invalid JSON from Gemini: {cleaned_text}")
                 raise ValueError("INVALID_LLM_RESPONSE")
 
-            # Process Vector for Final Content
-            final_vector = None
-            final_content = data.get("finalContent")
-            decision_str = data.get("decision", "IGNORE")
+            # Process results array
+            results_data = data.get("results", [])
+            if not results_data:
+                logger.warning("No results in LLM response, returning empty batch")
+                return BatchKnowledgeEvaluationResult(results=[])
 
-            # Validate Enum
-            try:
-                decision = KnowledgeAction(decision_str)
-            except ValueError:
-                logger.warning(
-                    f"Invalid decision code '{decision_str}', defaulting to IGNORE."
+            processed_results = []
+            for result_item in results_data:
+                # Validate decision
+                decision_str = result_item.get("decision", "IGNORE")
+                try:
+                    decision = KnowledgeAction(decision_str)
+                except ValueError:
+                    logger.warning(
+                        f"Invalid decision '{decision_str}', defaulting to IGNORE"
+                    )
+                    decision = KnowledgeAction.IGNORE
+
+                # Generate vector for UPDATE decisions
+                final_vector = None
+                final_content = result_item.get("finalContent")
+                if decision == KnowledgeAction.UPDATE and final_content:
+                    final_vector = embedding_service.generate_embedding(
+                        final_content, is_query=False
+                    )
+
+                processed_results.append(
+                    KnowledgeEvaluationResult(
+                        decision=decision,
+                        targetId=str(result_item.get("targetId"))
+                        if result_item.get("targetId") is not None
+                        else None,
+                        finalContent=final_content,
+                        finalVector=final_vector,
+                        reasoning=result_item.get("reasoning", ""),
+                    )
                 )
-                decision = KnowledgeAction.IGNORE
 
-            # Generate vector ONLY if content is new/modified (UPDATE)
-            if decision in [KnowledgeAction.UPDATE] and final_content:
-                final_vector = embedding_service.generate_embedding(
-                    final_content, is_query=False
-                )
-
-            return KnowledgeEvaluationResult(
-                decision=decision,
-                targetId=str(data.get("targetId"))
-                if data.get("targetId") is not None
-                else None,
-                finalContent=final_content,
-                finalVector=final_vector,
-                reasoning=data.get("reasoning", ""),
-            )
+            return BatchKnowledgeEvaluationResult(results=processed_results)
 
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")
