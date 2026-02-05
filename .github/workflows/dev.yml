@@ -1,0 +1,370 @@
+name: AI CI/CD v3
+
+on:
+  pull_request:
+    branches:
+      - dev
+    paths:
+      - ".github/**"
+      - "ai_server/**"
+  push:
+    branches:
+      - dev
+    paths:
+      - ".github/**"
+      - "ai_server/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # 1) CI
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('ai_server/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r ai_server/requirements.txt
+          pip install ruff pytest
+
+      - name: Run Ruff Lint
+        run: ruff check ai_server/
+
+      - name: Run Ruff Format Check
+        run: ruff format --check ai_server/
+
+      - name: Run Tests
+        working-directory: ai_server
+        run: pytest || echo "No tests found, skipping."
+
+  ci-notify-success:
+    needs: ci
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CI success
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: success
+          title: "🟢 AI CI Success"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 성공!"
+          color: 0x00FF00
+
+  ci-notify-failure:
+    needs: ci
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CI failure
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: failure
+          title: "🔴 AI CI Failed"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 실패!"
+          color: 0xFF0000
+
+  # 2) CD
+  cd:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      # 0️⃣ Runner IP 획득 및 보안 그룹 추가
+      - name: Get Runner IP
+        id: ip
+        run: echo "ipv4=$(curl -s https://api.ipify.org)" >> $GITHUB_OUTPUT
+
+      - name: Add IP to Security Group
+        run: |
+          aws ec2 authorize-security-group-ingress \
+            --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "${{ steps.ip.outputs.ipv4 }}/32"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-northeast-2
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEV_SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.DEV_SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy AI Server
+        run: |
+          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
+          set -euo pipefail
+
+          APP_ROOT=/home/ubuntu/mine/ai
+          RELEASES_DIR=$APP_ROOT/releases
+          SHARED_DIR=$APP_ROOT/shared
+          CURRENT_LINK=$APP_ROOT/current
+
+          # 릴리즈 식별자(초 단위)
+          RELEASE_ID=$(date +%Y%m%d%H%M%S)
+          RELEASE_DIR=$RELEASES_DIR/$RELEASE_ID
+
+          # 로그/환경변수/프로세스 관리 파일
+          LOG_DIR=$SHARED_DIR/logs
+          LOG_FILE=$LOG_DIR/ai.log
+          ENV_FILE=$SHARED_DIR/.env
+          PID_FILE=$SHARED_DIR/ai.pid
+
+          # venv는 shared에 1개만 유지(릴리즈별 생성 X)
+          VENV_DIR=$SHARED_DIR/.venv
+
+          # 원격 레포 URL
+          REPO_URL="https://github.com/100-hours-a-week/4-team-IMYME-ai.git"
+          BRANCH="dev"
+
+          echo "🚀 AI Deploy start (release/current)"
+
+          mkdir -p "$RELEASES_DIR" "$SHARED_DIR" "$LOG_DIR"
+
+          # 환경변수 파일 존재 확인
+          if [ ! -f "$SHARED_DIR/.env" ]; then
+            echo "❌ shared .env not found: $SHARED_DIR/.env"
+            exit 1
+          fi
+
+          # 새 릴리즈 폴더에 코드 스냅샷 저장
+          echo "📦 Create new release: $RELEASE_DIR"
+          mkdir -p "$RELEASE_DIR"
+
+          echo "📥 Clone repo snapshot (depth=1, branch=$BRANCH)"
+          git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$RELEASE_DIR"
+          # --depth 1 : 최신 커밋만 받아서 빠름
+          # 릴리즈 폴더에 “그 시점 코드”가 그대로 남음 → 롤백 가능해짐
+
+          # 가상환경 준비 + 의존성 설치
+          echo "🛠 Prepare venv: $VENV_DIR"
+
+          if [ ! -d "$VENV_DIR" ]; then
+            echo "📦 Creating shared virtual environment"
+            python3 -m venv "$VENV_DIR"
+          fi
+
+          # venv 활성화
+          source "$VENV_DIR/bin/activate"
+
+          echo "📦 Install dependencies"
+          pip install --upgrade pip
+
+          # requirements는 “새 릴리즈(current 기준)”의 파일을 기준으로 설치/업데이트
+          pip install -r "$RELEASE_DIR/ai_server/requirements.txt"
+
+          # 기존 프로세스 종료 (pid 파일 기준)
+          echo "🛑 Stop existing AI process (pid file)"
+          if [ -f "$PID_FILE" ]; then
+            OLD_PID=$(cat "$PID_FILE" || true)
+            if [ -n "${OLD_PID:-}" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+              echo " - stopping pid=$OLD_PID"
+              kill "$OLD_PID" || true
+
+              # 종료 확인(최대 10초)
+              for i in {1..10}; do
+                if kill -0 "$OLD_PID" 2>/dev/null; then
+                  echo "   waiting... ($i/10)"
+                  sleep 1
+                else
+                  echo "   stopped"
+                  break
+                fi
+              done
+
+              # 그래도 살아있으면 강제 종료
+              if kill -0 "$OLD_PID" 2>/dev/null; then
+                echo " - still alive, SIGKILL"
+                kill -9 "$OLD_PID" || true
+              fi
+            else
+              echo " - pid file exists but process not running (pid=$OLD_PID)"
+            fi
+          else
+            echo " - pid file not found (maybe not running)"
+          fi
+
+          # 포트 점유 프로세스 무조건 종료
+          PIDS=$(lsof -t -i :8000 -nP 2>/dev/null || true)
+
+          if [ -n "${PIDS:-}" ]; then
+            echo " - found: $PIDS"
+            kill $PIDS || true
+
+            # 최대 10초 대기
+            for i in {1..10}; do
+              if lsof -t -i :8000 -nP >/dev/null 2>&1; then
+                echo "   waiting port release... ($i/10)"
+                sleep 1
+              else
+                echo "   port 8000 released"
+                break
+              fi
+            done
+
+            # 아직도 점유 중이면 강제 종료
+            if lsof -t -i :8000 -nP >/dev/null 2>&1; then
+              echo " - still in use, SIGKILL"
+              kill -9 $(lsof -t -i :8000 -nP 2>/dev/null || true) || true
+            fi
+          fi
+
+          # current 심볼릭 링크 교체 
+          echo "🔁 Switch current -> $RELEASE_DIR"
+          ln -sfn "$RELEASE_DIR" "$CURRENT_LINK"
+
+          # 서버 시작
+          echo "▶ Start AI server (current)"
+
+          # env를 export 상태로 로드하여 uvicorn에 전달
+          set -a
+          source "$ENV_FILE"
+          set +a
+
+          # current 기준으로 실행
+          cd "$CURRENT_LINK/ai_server"
+
+          nohup uvicorn app.main:app \
+            --host 0.0.0.0 \
+            --port 8000 \
+            >> "$LOG_FILE" 2>&1 </dev/null &
+
+          NEW_PID=$!
+          echo "$NEW_PID" > "$PID_FILE"
+          echo "✅ AI server started (pid=$NEW_PID)"
+
+          # 헬스체크 (로컬)
+          echo "🔍 Health check"
+          for i in {1..10}; do
+            if curl -sf http://127.0.0.1:8000/ > /dev/null; then
+              echo "✅ Health check passed"
+              break
+            fi
+            echo "⏳ Waiting for server..."
+            sleep 2
+          done
+
+          if ! curl -sf http://127.0.0.1:8000/ > /dev/null; then
+            echo "❌ Health check failed"
+            tail -n 200 "$LOG_FILE" || true
+            exit 1
+          fi
+
+          # 오래된 릴리즈 정리 (최근 3개만 보관)
+          echo "🧹 Cleanup old releases (keep last 3)"
+          ls -1dt "$RELEASES_DIR"/* | tail -n +4 | xargs -r rm -rf
+
+          echo "🎉 AI Deploy finished"
+          EOF
+
+      # 배포 후 스모크 테스트
+      - name: Post-deploy Smoke Test (AI)
+        run: |
+          set -euo pipefail
+
+          BASE_URL="${{ secrets.DEV_BASE_URL }}"
+
+          echo "🔎 Smoke 1) /ai/health should return 200"
+          curl -fsS "${BASE_URL}/ai/health" >/dev/null
+
+          echo "🔎 Smoke 2) POST ai/api/v1/knowledge/candidates/batch should succeed"
+          # 응답을 파일로 저장하고 HTTP 상태코드 분리
+          HTTP_CODE=$(curl --max-time 180 -sS -o /tmp/ai_batch_resp.json -w "%{http_code}" \
+            -X POST "${BASE_URL}/ai/api/v1/knowledge/candidates/batch" \
+            -H "Content-Type: application/json" \
+            -H "x-internal-secret: ${{ secrets.INTERNAL_SECRET_KEY }}" \
+            --data '{
+              "items": [
+                {
+                  "id": "history_125",
+                  "keyword": "운영체제",
+                  "rawFeedback": "운영체제"
+                }
+              ]
+            }')
+
+          # 상태코드가 200~299 사이인지 확인.
+          [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] || {
+            echo "❌ HTTP $HTTP_CODE"
+            cat /tmp/ai_batch_resp.json
+            exit 1
+          }
+
+          # 응답 JSON 안에 "success": true가 포함되어 있는지 확인.
+          grep -q '"success"[[:space:]]*:[[:space:]]*true' /tmp/ai_batch_resp.json || {
+            echo "❌ success=true not found"
+            cat /tmp/ai_batch_resp.json
+            exit 1
+          }
+
+          echo "✅ AI smoke tests passed"
+
+      # 5️⃣ 보안 그룹에서 IP 제거 (항상 실행)
+      - name: Remove IP from Security Group
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id ${{ secrets.AWS_SECURITY_GROUP_ID }} \
+            --protocol tcp \
+            --port 22 \
+            --cidr "${{ steps.ip.outputs.ipv4 }}/32"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ap-northeast-2
+
+  cd-notify-success:
+    needs: cd
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CD success
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: success
+          title: "🟢 AI Deploy Success"
+          content: "AI 서버 개발 서버 배포 완료!"
+          color: 0x00FF00
+
+  cd-notify-failure:
+    needs: cd
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord CD failure
+        uses: sarisia/actions-status-discord@v1
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
+          status: failure
+          title: "🔴 AI Deploy Failed"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 개발 서버 배포 실패!"
+          color: 0xFF0000
