@@ -2,6 +2,7 @@ import requests
 import time
 
 from app.core.config import settings
+from app.core.metrics import record_stt_request, record_runpod_failure
 from fastapi import HTTPException
 import logging
 
@@ -95,9 +96,16 @@ class RunPodClient:
 
             if status == "COMPLETED":
                 logger.info("Job completed successfully.")
-                return data["output"]
+                output = data["output"]
+                # Record STT metrics
+                processing_time = output.get("processing_time")
+                if processing_time:
+                    record_stt_request(status="success", processing_time=processing_time)
+                return output
             elif status == "FAILED":
                 logger.error(f"Job failed: {data}")
+                record_stt_request(status="failed")
+                record_runpod_failure(failure_reason="failed")
                 raise HTTPException(
                     status_code=500,
                     detail=f"Transcription job failed: {data.get('error')}",
@@ -105,6 +113,9 @@ class RunPodClient:
 
             time.sleep(2)  # Polling interval
 
+        # Timeout occurred
+        record_stt_request(status="timeout")
+        record_runpod_failure(failure_reason="timeout")
         raise HTTPException(status_code=504, detail="Transcription job timed out")
 
     def _mock_response(self, url: str):

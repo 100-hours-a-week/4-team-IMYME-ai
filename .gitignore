@@ -33,3 +33,8 @@ build/
 *.key
 *.pem
 *.p12
+
+
+# halo env
+ai_server/venv/
+ai_server/check.sh

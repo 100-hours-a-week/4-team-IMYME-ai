@@ -1,7 +1,9 @@
 import google.generativeai as genai
 from app.core.config import settings
+from app.core.metrics import record_llm_request
 import json
 import logging
+import time
 from typing import List, Dict, Any
 from app.services.prompt_manager import prompt_manager
 
@@ -24,6 +26,7 @@ class FeedbackService:
         """
         Returns { "summarize": str, "keyword": [], "personalized": str }
         """
+        start_time = time.time()
 
         try:
             # Generate Dynamic Prompt via Manager
@@ -36,10 +39,29 @@ class FeedbackService:
             cleaned_text = (
                 response.text.replace("```json", "").replace("```", "").strip()
             )
-            return json.loads(cleaned_text)
+            result = json.loads(cleaned_text)
+
+            # Record successful LLM request
+            duration = time.time() - start_time
+            record_llm_request(
+                service="feedback",
+                model="gemini-3-flash",
+                status="success",
+                duration=duration,
+            )
+
+            return result
 
         except Exception as e:
             logger.error(f"Feedback generation failed: {e}")
+            # Record failed LLM request
+            duration = time.time() - start_time
+            record_llm_request(
+                service="feedback",
+                model="gemini-3-flash",
+                status="failed",
+                duration=duration,
+            )
             raise e
 
 

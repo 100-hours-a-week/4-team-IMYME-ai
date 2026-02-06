@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import time
 from app.services.task_store import task_store
 from app.services.scoring_service import scoring_service
 from app.services.feedback_service import feedback_service
+from app.core.metrics import record_analysis_task
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +23,12 @@ class AnalysisService:
         """
         Background task entry point.
         """
+        start_time = time.time()
         logger.info(f"Task {task_id}: Started analysis.")
 
         # Update status to PROCESSING
         task_store.save_task(task_id, "PROCESSING")
+        record_analysis_task(status="PROCESSING")
 
         try:
             # 1. Validation Logic
@@ -47,6 +51,8 @@ class AnalysisService:
                 }
 
                 task_store.save_task(task_id, "COMPLETED", result=final_result)
+                duration = time.time() - start_time
+                record_analysis_task(status="COMPLETED", duration=duration)
                 return
 
             # 2. Parallel Execution (Scoring + Feedback)
@@ -69,6 +75,8 @@ class AnalysisService:
 
             # 4. Save COMPLETED state
             task_store.save_task(task_id, "COMPLETED", result=final_result)
+            duration = time.time() - start_time
+            record_analysis_task(status="COMPLETED", duration=duration)
             logger.info(f"Task {task_id}: Completed successfully.")
 
         except Exception as e:
@@ -77,6 +85,8 @@ class AnalysisService:
             task_store.save_task(
                 task_id, "FAILED", error={"code": "INTERNAL_ERROR", "msg": str(e)}
             )
+            duration = time.time() - start_time
+            record_analysis_task(status="FAILED", duration=duration)
 
 
 analysis_service = AnalysisService()

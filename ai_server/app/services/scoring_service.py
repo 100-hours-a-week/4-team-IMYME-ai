@@ -1,7 +1,9 @@
 import google.generativeai as genai
 from app.core.config import settings
+from app.core.metrics import record_llm_request, record_evaluation_result
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,8 @@ class ScoringService:
         """
         Evaluates the text and returns {"score": int, "level": str}
         """
+        start_time = time.time()
+
         try:
             prompt = self._build_prompt(user_text, criteria)
             response = await self.model.generate_content_async(prompt)
@@ -32,14 +36,33 @@ class ScoringService:
             )
             result = json.loads(cleaned_text)
 
+            overall_score = result.get("overall_score", 0)
+            level = result.get("level", 1)
+
+            # Record successful LLM request and evaluation metrics
+            duration = time.time() - start_time
+            record_llm_request(
+                service="scoring",
+                model="gemini-3-flash",
+                status="success",
+                duration=duration,
+            )
+            record_evaluation_result(overall_score=overall_score, level=level)
+
             return {
-                "overall_score": result.get("overall_score", 0),
-                "level": result.get("level", 1),
+                "overall_score": overall_score,
+                "level": level,
             }
         except Exception as e:
             logger.error(f"Scoring failed: {e}")
-            # Return a fallback or re-raise depending on policy.
-            # For now, return default to allow flow to continue (or can raise to fail task)
+            # Record failed LLM request
+            duration = time.time() - start_time
+            record_llm_request(
+                service="scoring",
+                model="gemini-3-flash",
+                status="failed",
+                duration=duration,
+            )
             raise e
 
     def _build_prompt(self, user_text: str, criteria: dict) -> str:
