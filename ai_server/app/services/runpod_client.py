@@ -2,7 +2,7 @@ import requests
 import time
 
 from app.core.config import settings
-from fastapi import HTTPException
+from app.core.errors import AppException, ErrorCode
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,8 +51,11 @@ class RunPodClient:
 
         except requests.RequestException as e:
             logger.error(f"RunPod internal error: {e}")
-            raise HTTPException(
-                status_code=502, detail=f"RunPod communication error: {str(e)}"
+            raise AppException(
+                code=ErrorCode.STT_FAILURE,
+                message="RunPod 통신 중 오류가 발생했습니다.",
+                detail={"raw_error": str(e)},
+                status_code=502,
             )
 
     def warmup_async(self) -> dict:
@@ -98,14 +101,21 @@ class RunPodClient:
                 return data["output"]
             elif status == "FAILED":
                 logger.error(f"Job failed: {data}")
-                raise HTTPException(
+                raise AppException(
+                    code=ErrorCode.STT_FAILURE,
+                    message="STT 작업이 실패했습니다.",
+                    detail={"job_error": data.get("error")},
                     status_code=500,
-                    detail=f"Transcription job failed: {data.get('error')}",
                 )
 
             time.sleep(2)  # Polling interval
 
-        raise HTTPException(status_code=504, detail="Transcription job timed out")
+        raise AppException(
+            code=ErrorCode.STT_TIMEOUT,
+            message="STT 작업이 타임아웃되었습니다.",
+            detail={"timeout_seconds": settings.RUNPOD_TIMEOUT_SECONDS},
+            status_code=504,
+        )
 
     def _mock_response(self, url: str):
         return {
