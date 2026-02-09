@@ -38,7 +38,7 @@
 
 ## 🏗️ Architecture
 
-시스템은 크게 **AI Server(Controller)**와 **STT Worker(GPU)**로 분리되어 있음.
+시스템은 크게 **AI Server** (Controller)와 **STT Worker** (GPU)로 분리되어 있습니다.
 
 ```mermaid
 graph LR
