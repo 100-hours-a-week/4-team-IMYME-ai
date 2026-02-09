@@ -1,10 +1,10 @@
 # 🧠 IMYME AI Server
 
-![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.109-009688?logo=fastapi&logoColor=white)
-![Gemini](https://img.shields.io/badge/Gemini-Pro%2F2.5%20Flash-4285F4?logo=google&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.110-009688?logo=fastapi&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini-3%20Pro%2F3%20Flash-4285F4?logo=google&logoColor=white)
 ![RunPod](https://img.shields.io/badge/RunPod-Serverless-7B16FF?logo=runpod&logoColor=white)
-![Whisper](https://img.shields.io/badge/Whisper-Large%20v3-FF9E0F?logo=openai&logoColor=white)
+![Whisper](https://img.shields.io/badge/Whisper-Large%20v3%20Turbo-FF9E0F?logo=openai&logoColor=white)
 
 > **"Speak, Learn, Improve."**
 > 
@@ -18,7 +18,7 @@
 이 프로젝트는 단순한 API 서버가 아니라, **복합적인 AI 파이프라인**을 처리하는 엔진.
 
 ### 1. ⚡️ High-Performance Dual-Model Engine
-- **Speed & Cost**: 실시간 피드백 생성과 점수 산정에는 **Gemini 2.5 Flash**를 사용하여 응답 속도를 극대화.
+- **Speed & Cost**: 실시간 피드백 생성과 점수 산정에는 **Gemini 3 Flash**를 사용하여 응답 속도를 극대화.
 - **Deep Reasoning**: 복잡한 지식 검증 및 평가(RAG)에는 **Gemini 3 Pro**를 사용하여 정확한 판단력을 보장.
 - **Flexible Architecture**: 모듈형 설계를 통해 상황에 따라 모델을 자유롭게 교체할 수 있음.
 
