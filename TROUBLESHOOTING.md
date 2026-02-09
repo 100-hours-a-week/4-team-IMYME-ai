@@ -113,41 +113,166 @@
 
 ---
 
-## 8. RAG Hybrid Search Similarity Score 이슈
 
-### 8.1. 증상 (Symptoms)
-- **상황**: `/api/v1/knowledge/evaluations` 엔드포인트로 전송되는 요청에서 `similars` 배열의 모든 항목이 `similarity: 0.0`으로 고정되어 있음.
-- **영향**: AI 서버가 정확한 유사도 점수를 받지 못해 중복 판단(UPDATE/IGNORE) 정확도가 저하됨.
+## 8. STT Hallucination (환각) 이슈
 
-### 8.2. 원인 (Root Cause)
-1.  **Repository 반환 타입 한계**:
-    - `KnowledgeRepository.hybridRRFSearch` 메소드가 `KnowledgeBase` **엔티티**를 반환하도록 설계됨.
-    - 엔티티는 DB 테이블과 1:1 매핑되므로, SQL 쿼리 실행 중 계산된 **임시 값(`similarity`, `rrf_score`)을 담을 필드가 없음**.
-    - 결과적으로 쿼리 내부에서 점수를 계산하고 정렬에 사용하지만, 최종 반환 시 점수 정보가 소실됨.
+Whisper 모델 사용 시, 실제 음성에 없는 텍스트가 생성되는 환각 현상이 발생. 주요 원인은 다음과 같음.
 
-2.  **Controller의 하드코딩**:
-    - `IntegrationTestController`에서 검색 결과를 `EvaluateSimilarInput`으로 변환할 때, 유사도 정보가 없어 `similarity: 0.0`으로 하드코딩됨.
+### 8.1. 데이터 편향에 의한 연상 작용 (Association-based Hallucination)
+- **현상**: 비디오의 시작, 끝, 혹은 배경음악만 나오는 구간에서 "시청해 주셔서 감사합니다(Thanks for watching)", "자막 제공: Amara.org", "좋아요와 구독 부탁드립니다" 등의 문구가 생성됨.
+- **원인**: Whisper 모델은 인터넷 영상 자막으로 학습됨. 학습 데이터에서 이러한 문구가 배경 소음(White Noise)이나 침묵 구간과 통계적으로 강하게 연결(Mapping)되어 있기 때문에, 정적 노이즈를 자막 크레딧 타이밍으로 오인하여 생성.
 
-### 8.3. 해결 (Solution)
-1.  **Repository 수정** (`KnowledgeRepository.java`):
-    - 새로운 메소드 `hybridSearchWithScore` 추가.
-    - SQL 쿼리의 `SELECT` 절에 `COALESCE(sr.similarity, 0.0) AS similarity` 포함.
-    - `semantic_ranked` CTE에 `similarity` 컬럼 추가.
-    - 반환 타입을 `List<SimilarKnowledge>` DTO로 변경하여 점수 정보 포함.
+### 8.2. 디코더의 자기 회귀적 루프 (Autoregressive Looping)
+- **현상**: 특정 단어가 무한 반복되거나 문맥에 맞지 않는 엉뚱한 문장이 생성됨.
+- **원인**: Transformer 디코더는 이전 토큰을 기반으로 다음 토큰을 생성함. 침묵 구간에서 모델이 불확실성 속에 임의의 잘못된 토큰을 하나 생성하면, 이것이 다음 스텝의 입력이 되어 오류가 증폭됨. 모델은 이 오류를 정당화하기 위해 억지스러운 문맥을 이어가거나 루프(Loop)에 빠지게 됨.
 
-2.  **Controller 수정** (`IntegrationTestController.java`):
-    - `hybridRRFSearch` → `hybridSearchWithScore` 호출로 변경.
-    - DTO에서 실제 유사도 값(`dto.getSimilarity()`)을 추출하여 AI 서버로 전송.
+[STT응답](https://www.notion.so/STT-hallucination-2fa1715a156080469f59f57df1eed8ce?source=copy_link)
 
-### 8.4. 검증 (Verification)
-수정 후 로그 확인 결과, 정상적인 유사도 점수가 출력됨:
-```json
+---
+
+## 9. Knowledge Evaluation: Single-Target → Multi-Decision 전환
+
+### 9.1. 문제 상황 (Problem)
+- **기존 방식**: Hybrid Search(Vector + Keyword RRF)를 통해 **단 1개의 유사 지식**만 선택하여 UPDATE/IGNORE 판단.
+- **발생한 문제**:
+  1. **의도한 Criteria가 검색되지 않음**: 테스트 시 예상했던 업데이트 대상 지식이 검색 결과 1위로 나오지 않고, 다른 지식이 선택됨.
+  2. **UPDATE 실험 불가**: 검색된 지식이 의도와 다르다 보니, LLM이 계속 `IGNORE` 판단만 내려 실제 UPDATE 로직을 검증할 수 없었음.
+  3. **Same-Keyword 우선순위 누락**: 같은 Keyword를 가진 지식은 우선적으로 업데이트 대상이 되어야 하는데, 검색 알고리즘만으로는 이를 보장할 수 없었음.
+
+### 9.2. 원인 분석 (Root Cause)
+1. **Hybrid Search의 한계**:
+   - Vector 유사도와 Keyword 매칭을 결합한 RRF 알고리즘은 **전체적인 유사성**을 기준으로 순위를 매김.
+   - 하지만 "같은 Keyword"라는 **명시적 우선순위**를 반영하지 못함.
+   - 결과적으로 다른 Keyword의 지식이 Vector 유사도가 높다는 이유로 1위를 차지할 수 있음.
+
+2. **Single-Target의 제약**:
+   - 1개만 선택하면 LLM이 판단할 수 있는 선택지가 제한됨.
+   - 검색 알고리즘의 오류나 편향을 LLM이 보정할 기회가 없음.
+
+### 9.3. 해결 방안 (Solution)
+**Multi-Decision Evaluation 도입**: 여러 개의 후보를 LLM에게 제공하고, 각각에 대해 독립적으로 UPDATE/IGNORE 판단하도록 변경.
+
+#### 변경 사항 (Changes)
+
+##### 1. **검색 로직 개선** (Backend: `KnowledgeBatchService.java`)
+```java
+// Step 1: Same-Keyword Items (항상 포함)
+List<KnowledgeBase> sameKeywordItems = knowledgeRepository
+    .findByKeywordId(keywordId)
+    .stream()
+    .limit(10)
+    .collect(Collectors.toList());
+
+// Step 2: Hybrid RRF Search (다양한 후보 검색)
+List<KnowledgeSearchResult> rrfResults = knowledgeRepository
+    .findSimilarKnowledgeByHybridRRF(
+        candidate.refinedText(), 
+        vectorStr, 
+        keywordId, 
+        20  // 충분한 후보 확보
+    );
+
+// Step 3: Merge & Filter
+// - Same-Keyword는 무조건 포함 (distance = 0.0)
+// - RRF 결과는 Threshold 필터링 후 중복 제거하여 추가
+List<KnowledgeSearchResult> mergedSimilars = mergeSimilarResults(
+    sameKeywordItems, 
+    filteredRrfResults, 
+    keyword
+);
+```
+
+**핵심 개선점**:
+- **Same-Keyword 우선 보장**: `findByKeywordId`로 같은 Keyword 지식을 먼저 가져와 `distance=0.0`으로 설정하여 최우선 순위 부여.
+- **다양한 후보 확보**: RRF로 최대 20개 검색 후 Threshold 필터링하여 품질 유지.
+- **중복 제거**: Same-Keyword와 RRF 결과를 병합하되, ID 중복은 제거.
+
+##### 2. **AI Server 프롬프트 수정** (`prompts.py`)
+```python
+KNOWLEDGE_EVALUATION_PROMPT = """
+당신은 지식 베이스 관리자입니다. 새로운 후보 지식과 기존 유사 지식들을 비교하여,
+**각 기존 지식마다** UPDATE 또는 IGNORE 결정을 내려야 합니다.
+
+[Decision Rules]
+1. Keyword Compatibility: 같은 Keyword면 우선 UPDATE 고려
+2. Conflict Check: 내용 모순 시 IGNORE
+3. Value Assessment: 새로운 정보가 있으면 UPDATE
+
+[Output Format]
 {
-  "similars": [
-    { "id": "11", "similarity": 0.6684612032542473 },
-    { "id": "13", "similarity": 0.34919357016201613 },
-    { "id": "12", "similarity": 0.2953150184358715 }
+  "results": [
+    {
+      "targetId": "123",
+      "decision": "UPDATE",
+      "finalContent": "...",  // UPDATE인 경우 병합된 텍스트
+      "reasoning": "..."
+    },
+    {
+      "targetId": "456",
+      "decision": "IGNORE",
+      "reasoning": "..."
+    }
   ]
 }
+"""
 ```
+
+**핵심 변경점**:
+- **Single → Multi**: 1개 결과 → `results` 배열로 변경.
+- **각 항목 독립 판단**: LLM이 문맥과 Keyword를 종합하여 각 Similar Item에 대해 개별 결정.
+- **Keyword 우선순위 명시**: Prompt에 "같은 Keyword면 우선 고려" 규칙 추가.
+
+##### 3. **Backend 처리 로직 수정** (`KnowledgeBatchService.java`)
+```java
+// 기존: 단일 결과 처리
+if ("UPDATE".equals(evalResult.decision())) {
+    updateKnowledge(targetId, finalContent);
+}
+
+// 변경: 다중 결과 순회 처리
+for (EvaluationDecision decision : evalResult.results()) {
+    if ("UPDATE".equals(decision.decision())) {
+        Long targetId = Long.parseLong(decision.targetId());
+        updateKnowledge(targetId, decision.finalContent());
+        updatedCount++;
+    } else {
+        ignoredCount++;
+    }
+}
+```
+
+### 9.4. 결과 및 효과 (Results)
+1. **UPDATE 검증 가능**: 같은 Keyword 지식이 항상 포함되므로, 의도한 업데이트 시나리오 테스트 가능.
+2. **LLM 판단력 활용**: 검색 알고리즘의 한계를 LLM이 보완. 여러 후보 중 실제로 업데이트할 가치가 있는 것만 선택.
+3. **유연성 향상**: 1개 제약 제거로 동시에 여러 지식을 업데이트하거나, 모두 IGNORE 가능.
+4. **정확도 개선**: Keyword Context를 명시적으로 제공하여 LLM의 판단 근거 강화.
+
+### 9.5. 트레이드오프 (Trade-offs)
+- **비용 증가**: LLM에게 더 많은 정보를 전달하므로 Token 사용량 증가.
+- **응답 시간**: 여러 항목 판단으로 인해 약간의 지연 발생 (하지만 `gemini-flash` 사용으로 완화).
+- **복잡도**: Backend 로직이 단일 결과 처리에서 배열 순회로 변경되어 코드 복잡도 증가.
+
+### 9.6. 향후 개선 방향 (Future Improvements)
+- **Adaptive Candidate Count**: 검색 결과 품질에 따라 LLM에게 전달할 후보 수를 동적 조정.
+- **Batch Evaluation**: 여러 Candidate를 한 번에 평가하여 API 호출 횟수 감소.
+- **Confidence Score**: LLM이 각 결정에 대한 확신도를 반환하도록 하여 임계값 기반 필터링 가능.
+
+
+## 10. `NameError: name 'settings' is not defined`
+### 10.1. 원인 (Cause)
+- **RunPod Client (`ai_server`)**: `app/core/config.py`의 `settings` 객체를 import하지 않고 사용하여 발생.
+- **RunPod Worker (`stt_server`)**: `inference_service.py`에서 `config.py`의 `settings`를 import하지 않고 `settings.VAD_FILTER` 등을 참조하여 발생. 특히 로컬 테스트와 달리 RunPod 환경에서만 발생하여 발견이 늦음.
+
+### 10.2. 해결 (Solution)
+- **AI Server**: `runpod_client.py` 에 `from app.core.config import settings` 추가.
+- **STT Server**: `inference_service.py` 에 `from config import settings` 추가.
+
+## 11. Feedback JSON에 Markdown 포함 문제 (Prompt Engineering)
+### 11.1. 문제 상황 (Problem)
+- **현상**: AI가 생성한 피드백 JSON의 값(Value)에 `**bold**`나 `*italic*` 같은 마크다운 문법이 포함됨.
+- **영향**: 프론트엔드에서 JSON을 파싱하여 UI에 표시할 때, 원치 않는 마크다운 기호가 그대로 노출됨.
+
+### 11.2. 해결 (Solution)
+- **프롬프트 개선**: `prompts.py`의 `BASE_SYSTEM_PROMPT`에 **"Strictly NO Markdown"** 규칙을 추가.
+- **지시사항**: "JSON 내부의 값은 반드시 **평문(Plain Text)**이어야 하며, 볼드나 이탤릭 등을 절대 사용하지 말 것"을 명시.
 
