@@ -86,15 +86,15 @@ class AnalysisService:
 
         except Exception as e:
             logger.error(f"Task {task_id}: Failed with error {e}")
-            
+
             error_msg = str(e).lower()
             code = ErrorCode.INTERNAL_ERROR
-            
+
             if "llm" in error_msg or "gemini" in error_msg or "500" in error_msg:
                 code = ErrorCode.LLM_PROVIDER_ERROR
             elif "embedding" in error_msg or "vector" in error_msg:
                 code = ErrorCode.EMBEDDING_FAILURE
-                
+
             task_store.save_task(
                 task_id,
                 "FAILED",

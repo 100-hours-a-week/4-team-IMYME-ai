@@ -29,7 +29,10 @@ async def refine_candidates_batch(request: RefineCandidatesRequest):
         return RefineCandidatesResponse(
             success=False,
             data=RefineCandidatesResponseData(processedCount=0, candidates=[]),
-            error={"code": ErrorCode.EMPTY_BATCH_DATA.value, "message": "입력 데이터가 비어있습니다."},
+            error={
+                "code": ErrorCode.EMPTY_BATCH_DATA.value,
+                "message": "입력 데이터가 비어있습니다.",
+            },
         )
 
     try:
@@ -47,7 +50,10 @@ async def refine_candidates_batch(request: RefineCandidatesRequest):
         return RefineCandidatesResponse(
             success=False,
             data=RefineCandidatesResponseData(processedCount=0, candidates=[]),
-            error={"code": ErrorCode.INTERNAL_ERROR.value, "message": "배치 처리 중 예상치 못한 오류가 발생했습니다."},
+            error={
+                "code": ErrorCode.INTERNAL_ERROR.value,
+                "message": "배치 처리 중 예상치 못한 오류가 발생했습니다.",
+            },
         )
 
 
@@ -68,7 +74,10 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
             data=KnowledgeEvaluationResult(
                 decision=KnowledgeAction.IGNORE, reasoning="Validation Failed"
             ),
-            error={"code": ErrorCode.TEXT_TOO_LONG.value, "message": "텍스트 길이가 제한을 초과했습니다."},
+            error={
+                "code": ErrorCode.TEXT_TOO_LONG.value,
+                "message": "텍스트 길이가 제한을 초과했습니다.",
+            },
         )
 
     try:
@@ -92,5 +101,8 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
             data=KnowledgeEvaluationResult(
                 decision=KnowledgeAction.IGNORE, reasoning="Internal Error"
             ),
-            error={"code": ErrorCode.INTERNAL_ERROR.value, "message": "평가 처리 중 예상치 못한 오류가 발생했습니다."},
+            error={
+                "code": ErrorCode.INTERNAL_ERROR.value,
+                "message": "평가 처리 중 예상치 못한 오류가 발생했습니다.",
+            },
         )

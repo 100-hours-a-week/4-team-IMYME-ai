@@ -87,11 +87,7 @@ async def transcribe_audio(request: TranscriptionRequest):
 
         # Analyze error message to determine specific code
         # 에러 메시지 분석
-        if (
-            "download" in error_msg.lower()
-            or "403" in error_msg
-            or "404" in error_msg
-        ):
+        if "download" in error_msg.lower() or "403" in error_msg or "404" in error_msg:
             # Download failure (S3 permission, etc)
             error_code = ErrorCode.DOWNLOAD_FAILURE
 
@@ -103,4 +99,3 @@ async def transcribe_audio(request: TranscriptionRequest):
                 detail={"raw_error": error_msg},
             ),
         )
-

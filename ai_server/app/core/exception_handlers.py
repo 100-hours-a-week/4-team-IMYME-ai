@@ -56,7 +56,7 @@ def add_exception_handlers(app: FastAPI) -> None:
             if error["type"] == "json_invalid":
                 error_code = ErrorCode.INVALID_JSON
                 message = "JSON 형식이 올바르지 않습니다."
-            
+
             # Check for missing field error
             if error["type"] == "missing":
                 error_code = ErrorCode.MISSING_CONTEXT

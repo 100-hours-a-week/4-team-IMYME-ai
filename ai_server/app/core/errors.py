@@ -13,7 +13,7 @@ class ErrorCode(str, Enum):
     """
     Enumeration of all error codes used in the AI Server.
     Each code maps to a specific error scenario.
-    
+
     Naming Convention: [DOMAIN]_[ACTION]_[ISSUE] or [GENERAL_ISSUE]
     """
 
