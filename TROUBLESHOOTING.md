@@ -331,3 +331,55 @@ for (EvaluationDecision decision : evalResult.results()) {
 - **Frontend**: `response.data.success` 플래그 하나로 성공/실패 분기 가능하며, `error.code`를 통해 다국어 처리나 특정 에러 대응이 용이해짐.
 - **Backend**: 에러 추가 시 `ErrorCode` Enum만 정의하고 `raise AppException`하면 되므로 유지보수성 향상.
 - **Debugging**: `runpod_client` 등 외부 연동 구간의 에러가 명확한 코드(`STT_TIMEOUT`, `GPU_FAIL`)로 기록되어 문제 원인 파악이 빨라짐.
+
+
+## 13. Solo Submission 빈 텍스트 400 에러 및 무한 대기 이슈
+
+### 13.1. 문제 상황 (Problem)
+- **현상 1 (API Error)**: 음성 인식(STT) 결과가 빈 문자열(`""`)일 때, `/api/v1/solo/submissions` 호출 시 **400 Bad Request** 에러 발생.
+    ```text
+    WARNING: Validation Error (ErrorCode.VALIDATION_ERROR):
+    [{'field': 'body.userText', 'reason': 'String should have at least 1 character', 'type': 'string_too_short'}]
+    INFO: "POST /api/v1/solo/submissions HTTP/1.0" 400 Bad Request
+    ```
+- **현상 2 (Backend Infinite Wait)**: Main Server(Spring Boot)는 AI Server에 요청을 보낸 후 비동기 응답(202 Accepted)을 기대하며 폴링(Polling) 로직에 진입하거나 대기 상태가 됨.
+    - 하지만 AI Server가 400 에러를 즉시 반환하고 연결을 종료해버림.
+    - Main Server는 **예상치 못한 400 응답에 대한 예외 처리가 미비**하여, "성공 응답이 올 때까지" 혹은 "타임아웃될 때까지" 계속 기다리는 **무한 대기(Hanging)** 상태에 빠짐.
+    - 이로 인해 사용자 브라우저에서도 "분석 중..." 화면이 멈추지 않는 치명적인 UX 문제 발생.
+
+### 13.2. 원인 분석 (Root Cause)
+1.  **AI Server (FastAPI)**: `SoloSubmissionRequest` 스키마의 `min_length=1` 제약으로 인해 빈 텍스트 수신 시 **즉시 400 에러**를 리턴하고 비즈니스 로직(Task 생성)을 실행하지 않음.
+2.  **Main Server (Spring Boot)**: AI Server 호출 시 `2xx` 응답이 아닌 `4xx` 에러가 왔을 때, 이를 "작업 실패"로 간주하고 즉시 중단하는 로직이 누락되었거나, `WebClient`/`FeignClient`가 에러를 삼키고 재시도(Retry)를 반복하는 구조였을 가능성.
+
+### 13.3. 해결 (Solution)
+**AI Server 측면에서 근본 해결**:
+- `min_length=1` 제약을 **제거**하여 빈 문자열도 정상 요청으로 접수(202)되도록 변경.
+- 이를 통해 Main Server는 항상 202 응답을 받고 정상적인 Polling 프로세스를 진행할 수 있게 됨.
+- AI Server 내부 로직(`analysis_service`)에서 텍스트 길이를 체크하여 **0점 처리(COMPLETED)**를 수행하므로, Main Server는 Polling 중 "완료" 상태를 감지하여 정상 종료 가능.
+
+```python
+# 변경 후 (app/schemas/solo.py)
+user_text: str = Field(..., alias="userText", ...)
+```
+
+### 13.4. 안전성 분석 (Safety Analysis)
+#### ✅ 안전한 이유: Defense-in-Depth (다층 방어)
+빈 문자열이 스키마를 통과하더라도, 서비스 레이어에서 안전하게 처리됨:
+
+| 단계 | 위치 | 동작 |
+|------|------|------|
+| ① API Layer | `endpoints/solo.py` | 빈 문자열 수신 → 202 Accepted (즉시 접수) |
+| ② Background Task | `analysis_service.py` (Line 43) | `len(user_text.strip()) < 5` 체크 → LLM 호출 **건너뜀** |
+| ③ Result | `task_store` | `COMPLETED` 상태로 0점 + 안내 피드백 저장 |
+
+- **Main Server 안정성 확보**: 이제 Main Server는 예외 상황(빈 텍스트)에서도 정상적인 분석 완료 응답을 받을 수 있어 무한 대기 문제가 해결됨.
+- **LLM 비용 절감**: 5글자 미만은 API 호출 없이 처리됨.
+- **예외 처리 간소화**: Main Server가 별도의 400 에러 핸들링 로직을 복잡하게 구현할 필요 없이, 표준 프로세스대로 처리 가능.
+
+### 13.5. 변경된 API 동작 비교
+
+| 입력 | 변경 전 | 변경 후 |
+|------|---------|---------|
+| `"userText": ""` | ❌ 400 Bad Request → **Main Server 무한 대기** | ✅ 202 Accepted → 0점 완료 (정상 종료) |
+| `"userText": "안녕"` (1~4자) | ✅ 202 Accepted → 0점 | ✅ 202 Accepted → 0점 |
+| `"userText": "프로세스란..."` (5자+) | ✅ 202 Accepted → 정상 분석 | ✅ 202 Accepted → 정상 분석 |
