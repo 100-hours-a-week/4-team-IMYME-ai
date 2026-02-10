@@ -7,9 +7,11 @@ from app.schemas.knowledge import (
     KnowledgeEvaluationRequest,
     KnowledgeEvaluationResponse,
     KnowledgeEvaluationResult,
+    BatchKnowledgeEvaluationResult,  # Added for proper response wrapping
     KnowledgeAction,
 )
 from app.services.knowledge_service import knowledge_service
+from app.core.errors import ErrorCode, AppException
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,23 +27,34 @@ async def refine_candidates_batch(request: RefineCandidatesRequest):
     - output: List[KnowledgeCandidate] with Embeddings
     """
     if not request.items:
-        # 400 EMPTY_BATCH_DATA
         return RefineCandidatesResponse(
             success=False,
             data=RefineCandidatesResponseData(processedCount=0, candidates=[]),
-            error={"code": "EMPTY_BATCH_DATA", "msg": "Input items list is empty."},
+            error={
+                "code": ErrorCode.EMPTY_BATCH_DATA.value,
+                "message": "입력 데이터가 비어있습니다.",
+            },
         )
 
     try:
         data = await knowledge_service.refine_candidates_batch(request.items)
         return RefineCandidatesResponse(success=True, data=data, error=None)
-    except Exception as e:
-        logger.error(f"Refine Batch Error: {e}")
-        # 500 EMBEDDING_FAILURE or LLM_FAILURE
+    except AppException as e:
+        logger.error(f"Refine Batch Error: {e.code} - {e.message}")
         return RefineCandidatesResponse(
             success=False,
             data=RefineCandidatesResponseData(processedCount=0, candidates=[]),
-            error={"code": "INTERNAL_ERROR", "msg": str(e)},
+            error={"code": e.code.value, "message": e.message},
+        )
+    except Exception as e:
+        logger.error(f"Refine Batch Unexpected Error: {e}")
+        return RefineCandidatesResponse(
+            success=False,
+            data=RefineCandidatesResponseData(processedCount=0, candidates=[]),
+            error={
+                "code": ErrorCode.INTERNAL_ERROR.value,
+                "message": "배치 처리 중 예상치 못한 오류가 발생했습니다.",
+            },
         )
 
 
@@ -59,12 +72,17 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
     if len(request.candidate.text) > 5000:
         return KnowledgeEvaluationResponse(
             success=False,
-            # Return empty/default result wrapper to satisfy schema if needed, but Pydantic expects data.
-            # However, schema says data is required. Let's create dummy fail data.
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning="Validation Failed"
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning="Validation Failed"
+                    )
+                ]
             ),
-            error={"code": "TEXT_TOO_LONG", "msg": "Candidate text exceeds limit."},
+            error={
+                "code": ErrorCode.TEXT_TOO_LONG.value,
+                "message": "텍스트 길이가 제한을 초과했습니다.",
+            },
         )
 
     try:
@@ -72,21 +90,32 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
             request.candidate, request.similars
         )
         return KnowledgeEvaluationResponse(success=True, data=result, error=None)
-    except ValueError as ve:
-        # Invalid LLM Response
+    except AppException as e:
+        logger.error(f"Evaluation Error: {e.code} - {e.message}")
         return KnowledgeEvaluationResponse(
             success=False,
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning="LLM Error"
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning=str(e.code)
+                    )
+                ]
             ),
-            error={"code": "INVALID_LLM_RESPONSE", "msg": str(ve)},
+            error={"code": e.code.value, "message": e.message},
         )
     except Exception as e:
-        logger.error(f"Evaluation Error: {e}")
+        logger.error(f"Evaluation Unexpected Error: {e}")
         return KnowledgeEvaluationResponse(
             success=False,
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning="Internal Error"
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning="Internal Error"
+                    )
+                ]
             ),
-            error={"code": "INTERNAL_ERROR", "msg": str(e)},
+            error={
+                "code": ErrorCode.INTERNAL_ERROR.value,
+                "message": "평가 처리 중 예상치 못한 오류가 발생했습니다.",
+            },
         )
