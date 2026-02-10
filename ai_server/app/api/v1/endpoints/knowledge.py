@@ -7,6 +7,7 @@ from app.schemas.knowledge import (
     KnowledgeEvaluationRequest,
     KnowledgeEvaluationResponse,
     KnowledgeEvaluationResult,
+    BatchKnowledgeEvaluationResult,  # Added for proper response wrapping
     KnowledgeAction,
 )
 from app.services.knowledge_service import knowledge_service
@@ -71,8 +72,12 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
     if len(request.candidate.text) > 5000:
         return KnowledgeEvaluationResponse(
             success=False,
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning="Validation Failed"
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning="Validation Failed"
+                    )
+                ]
             ),
             error={
                 "code": ErrorCode.TEXT_TOO_LONG.value,
@@ -89,8 +94,12 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
         logger.error(f"Evaluation Error: {e.code} - {e.message}")
         return KnowledgeEvaluationResponse(
             success=False,
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning=str(e.code)
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning=str(e.code)
+                    )
+                ]
             ),
             error={"code": e.code.value, "message": e.message},
         )
@@ -98,8 +107,12 @@ async def evaluate_knowledge(request: KnowledgeEvaluationRequest):
         logger.error(f"Evaluation Unexpected Error: {e}")
         return KnowledgeEvaluationResponse(
             success=False,
-            data=KnowledgeEvaluationResult(
-                decision=KnowledgeAction.IGNORE, reasoning="Internal Error"
+            data=BatchKnowledgeEvaluationResult(
+                results=[
+                    KnowledgeEvaluationResult(
+                        decision=KnowledgeAction.IGNORE, reasoning="Internal Error"
+                    )
+                ]
             ),
             error={
                 "code": ErrorCode.INTERNAL_ERROR.value,
