@@ -3,6 +3,8 @@ from typing import List, Optional
 from sentence_transformers import SentenceTransformer
 import warnings
 
+from app.core.errors import AppException, ErrorCode
+
 # Suppress warnings for cleaner logs
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -41,7 +43,11 @@ class EmbeddingService:
             # Try to initialize if not loaded (lazy load attempt)
             self.initialize()
             if not self.model:
-                raise RuntimeError("Embedding Model is not loaded.")
+                raise AppException(
+                    code=ErrorCode.EMBEDDING_FAILURE,
+                    message="임베딩 모델이 로드되지 않았습니다.",
+                    status_code=500,
+                )
 
         # NOTE: For Qwen3-Embedding, queries generally benefit from an instruction.
         # "Instruct: ...\nQuery: ..."
@@ -59,7 +65,12 @@ class EmbeddingService:
             return embeddings.tolist()
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
-            raise e
+            raise AppException(
+                code=ErrorCode.EMBEDDING_FAILURE,
+                message="임베딩 생성 중 오류가 발생했습니다.",
+                detail={"raw_error": str(e)},
+                status_code=500,
+            )
 
 
 # Global instance pattern (optional, but convenient)

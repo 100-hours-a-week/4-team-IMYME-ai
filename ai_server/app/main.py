@@ -3,6 +3,9 @@ from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.exception_handlers import add_exception_handlers
+from app.core.errors import ErrorCode
+from app.schemas.common import create_error_response
 import logging
 
 # Configure logging
@@ -20,6 +23,9 @@ app = FastAPI(
     root_path=settings.ROOT_PATH,
     dependencies=[Security(api_key_header)],  # Add Global Security
 )
+
+# Register global exception handlers for consistent error format
+add_exception_handlers(app)
 
 
 @app.middleware("http")
@@ -49,7 +55,10 @@ async def verify_internal_secret(request: Request, call_next):
     elif request.headers.get("x-internal-secret") != settings.INTERNAL_SECRET_KEY:
         return JSONResponse(
             status_code=403,
-            content={"detail": "Access Denied: Invalid Internal Secret"},
+            content=create_error_response(
+                code=ErrorCode.AUTH_ERROR,
+                message="접근이 거부되었습니다. (Invalid Internal Secret)",
+            ),
         )
 
     response = await call_next(request)

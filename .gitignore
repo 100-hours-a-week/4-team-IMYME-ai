@@ -33,3 +33,7 @@ build/
 *.key
 *.pem
 *.p12
+
+
+.log
+.log.*

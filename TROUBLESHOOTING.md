@@ -276,3 +276,58 @@ for (EvaluationDecision decision : evalResult.results()) {
 - **프롬프트 개선**: `prompts.py`의 `BASE_SYSTEM_PROMPT`에 **"Strictly NO Markdown"** 규칙을 추가.
 - **지시사항**: "JSON 내부의 값은 반드시 **평문(Plain Text)**이어야 하며, 볼드나 이탤릭 등을 절대 사용하지 말 것"을 명시.
 
+
+---
+
+## 12. Endpoint Error Handling Standardization
+
+### 12.1. 문제 상황 (Problem)
+- **일관성 부재**: API 별로 에러 응답 형식이 제각각이었음.
+    - 일부는 `HTTPException` (FastAPI 기본) 사용.
+    - 일부는 `JSONResponse(content={"error": ...})` 사용.
+    - 일부는 Service Layer에서 `return {"status": "failed"}` 형태의 Raw Dict 반환.
+- **Frontend 처리 어려움**: 클라이언트가 에러를 처리하기 위해 각 API마다 다른 로직을 구현해야 했음.
+- **모호한 에러 코드**: `500 Internal Server Error`나 `400 Bad Request` 등 포괄적인 HTTP 상태 코드만으로는 구체적인 원인(예: "STT 타임아웃", "LLM 파싱 실패")을 파악하기 어려움.
+
+### 12.2. 해결 (Solution)
+**모든 API 응답을 표준화된 JSON 형식(`BaseResponse`)으로 통일하고, 중앙화된 에러 시스템 도입.**
+
+#### 1. 표준 응답 스키마 정의 (`schemas/common.py`)
+모든 응답은 아래 구조를 따름:
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "STT_TIMEOUT",
+    "message": "STT 작업이 타임아웃되었습니다.",
+    "detail": { "timeout_seconds": 300 }
+  }
+}
+```
+
+#### 2. Core Error System (`core/errors.py`)
+- **`ErrorCode` Enum**: 시스템 전반에서 사용하는 에러 코드를 한곳에서 관리 (`STT_FAILURE`, `INVALID_JSON`, `LLM_PROVIDER_ERROR` 등).
+- **`AppException`**: 모든 비즈니스 로직 에러의 최상위 클래스. Service Layer에서는 이 예외를 발생시키기만 하면 됨.
+    ```python
+    # Service Layer 예시
+    raise AppException(
+        code=ErrorCode.STT_FAILURE,
+        message="RunPod 통신 중 오류가 발생했습니다.",
+        status_code=502
+    )
+    ```
+
+#### 3. Global Exception Handlers (`core/exception_handlers.py`)
+- **`AppException` 핸들러**: Service에서 던진 `AppException`을 잡아 표준 JSON 응답으로 변환.
+- **`RequestValidationError` 핸들러**: Pydantic 유효성 검사 실패 시, 자동으로 분석하여 `MISSING_CONTEXT` 또는 `INVALID_JSON` 코드로 매핑.
+
+#### 4. Service Layer 리팩토링 (Phase 2)
+- **RunPod Client**: `HTTPException` 직접 발생 제거 → `AppException(STT_FAILURE/STT_TIMEOUT)` 사용.
+- **Knowledge Service**: `ValueError` 문자열 매칭 제거 → `AppException(LLM_PROVIDER_ERROR)` 명시적 발생.
+- **GPU Endpoint**: 임의의 Dict 반환 제거 → `create_error_response` 헬퍼 함수 사용.
+
+### 12.3. 결과 (Result)
+- **Frontend**: `response.data.success` 플래그 하나로 성공/실패 분기 가능하며, `error.code`를 통해 다국어 처리나 특정 에러 대응이 용이해짐.
+- **Backend**: 에러 추가 시 `ErrorCode` Enum만 정의하고 `raise AppException`하면 되므로 유지보수성 향상.
+- **Debugging**: `runpod_client` 등 외부 연동 구간의 에러가 명확한 코드(`STT_TIMEOUT`, `GPU_FAIL`)로 기록되어 문제 원인 파악이 빨라짐.

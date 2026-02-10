@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from app.services.runpod_client import runpod_client
+from app.core.errors import ErrorCode
+from app.schemas.common import create_error_response, create_success_response
 
 router = APIRouter()
 
@@ -18,11 +20,11 @@ async def trigger_warmup():
     if result["status"] == "failed":
         return JSONResponse(
             status_code=500,
-            content={
-                "success": False,
-                "data": None,
-                "error": f"WARMUP_FAILED: {result.get('error')}",
-            },
+            content=create_error_response(
+                code=ErrorCode.GPU_FAIL,
+                message="GPU 워밍업에 실패했습니다.",
+                detail={"raw_error": result.get("error")},
+            ),
         )
 
-    return {"success": True, "data": {"status": "WARMING_UP"}, "error": None}
+    return create_success_response(data={"status": "WARMING_UP"})

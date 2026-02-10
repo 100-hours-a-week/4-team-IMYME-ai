@@ -1,5 +1,6 @@
 import google.generativeai as genai
 from app.core.config import settings
+from app.core.errors import AppException, ErrorCode
 import logging
 from typing import List, Optional
 import json
@@ -65,16 +66,31 @@ class KnowledgeService:
                     refinedText=refined_text,
                     embedding=embedding,
                 )
+            except AppException:
+                # Re-raise AppException (already typed)
+                raise
             except Exception as e:
                 logger.error(f"Failed to refine item {item.id}: {e}")
-                return None
+                raise AppException(
+                    code=ErrorCode.LLM_PROVIDER_ERROR,
+                    message="LLM 처리 중 오류가 발생했습니다.",
+                    detail={"item_id": item.id, "raw_error": str(e)},
+                    status_code=500,
+                )
 
         # Execute parallel
         tasks = [process_item(item) for item in items]
-        processed_results = await asyncio.gather(*tasks)
+        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter None
-        candidates = [r for r in processed_results if r is not None]
+        # Filter out exceptions and None
+        candidates = []
+        for r in processed_results:
+            if isinstance(r, Exception):
+                # Log but continue processing other items
+                logger.warning(f"Skipping failed item: {r}")
+                continue
+            if r is not None:
+                candidates.append(r)
 
         return RefineCandidatesResponseData(
             processedCount=len(candidates), candidates=candidates
@@ -115,7 +131,12 @@ class KnowledgeService:
                 data = json.loads(cleaned_text)
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON from Gemini: {cleaned_text}")
-                raise ValueError("INVALID_LLM_RESPONSE")
+                raise AppException(
+                    code=ErrorCode.INVALID_LLM_RESPONSE,
+                    message="LLM 응답 파싱에 실패했습니다.",
+                    detail={"raw_response": cleaned_text[:200]},
+                    status_code=500,
+                )
 
             # Process results array
             results_data = data.get("results", [])
@@ -157,9 +178,17 @@ class KnowledgeService:
 
             return BatchKnowledgeEvaluationResult(results=processed_results)
 
+        except AppException:
+            # Re-raise AppException (already typed)
+            raise
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")
-            raise e
+            raise AppException(
+                code=ErrorCode.LLM_PROVIDER_ERROR,
+                message="LLM 평가 처리 중 오류가 발생했습니다.",
+                detail={"raw_error": str(e)},
+                status_code=500,
+            )
 
 
 knowledge_service = KnowledgeService()
