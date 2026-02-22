@@ -36,8 +36,7 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
         # 1. Pydantic으로 페이로드 검증
         request = STTRequest(**body)
         logger.info(
-            f"[STT Worker] Processing match={request.match_id}, "
-            f"user={request.user_id}"
+            f"[STT Worker] Processing match={request.match_id}, user={request.user_id}"
         )
 
         # 2. RunPod STT 호출
@@ -56,13 +55,10 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
             stt_text=stt_result.get("text", ""),
         )
 
-        await rabbitmq_service.publish(
-            settings.STT_RESULT_QUEUE, response.model_dump()
-        )
+        await rabbitmq_service.publish(settings.STT_RESULT_QUEUE, response.model_dump())
 
         logger.info(
-            f"[STT Worker] Completed match={request.match_id}, "
-            f"user={request.user_id}"
+            f"[STT Worker] Completed match={request.match_id}, user={request.user_id}"
         )
 
     except Exception as e:
@@ -91,6 +87,4 @@ async def start_stt_consumer() -> None:
     main.py의 lifespan에서 호출됩니다.
     """
     logger.info("[STT Worker] Starting consumer...")
-    await rabbitmq_service.consume(
-        settings.STT_REQUEST_QUEUE, handle_stt_message
-    )
+    await rabbitmq_service.consume(settings.STT_REQUEST_QUEUE, handle_stt_message)

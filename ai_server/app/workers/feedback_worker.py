@@ -22,9 +22,7 @@ from app.schemas.pvp_schema import FeedbackRequest, FeedbackResponse, PvpFeedbac
 logger = logging.getLogger(__name__)
 
 
-async def handle_feedback_message(
-    body: dict, message: AbstractIncomingMessage
-) -> None:
+async def handle_feedback_message(body: dict, message: AbstractIncomingMessage) -> None:
     """
     피드백 요청 메시지를 처리하는 콜백 함수.
 
