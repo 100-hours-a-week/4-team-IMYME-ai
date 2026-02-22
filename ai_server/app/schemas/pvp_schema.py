@@ -6,7 +6,7 @@ pvp_spec.md 문서의 큐 규격에 맞춰 Request/Response 모델을 정의합�
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Dict
+from typing import List, Optional
 
 
 # =============================================================
@@ -111,7 +111,5 @@ class FeedbackResponse(BaseModel):
 
     match_id: str = Field(..., description="매치 ID")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
-    feedback: Optional[PvpFeedbackResult] = Field(
-        None, description="비교 피드백 결과"
-    )
+    feedback: Optional[PvpFeedbackResult] = Field(None, description="비교 피드백 결과")
     error: Optional[str] = Field(None, description="실패 시 에러 메시지")
