@@ -40,7 +40,7 @@ class RunPodClient:
             run_url = f"{self.base_url}/run"
 
             logger.info(f"Sending job to RunPod: {run_url}")
-            response = requests.post(run_url, headers=self.headers, json=payload)
+            response = requests.post(run_url, headers=self.headers, json=payload, timeout=60)
             response.raise_for_status()
 
             job_data = response.json()
@@ -74,7 +74,7 @@ class RunPodClient:
             run_url = f"{self.base_url}/run"
             logger.info(f"Sending warmup signal to RunPod({self.endpoint_id})...")
 
-            response = requests.post(run_url, headers=self.headers, json=payload)
+            response = requests.post(run_url, headers=self.headers, json=payload, timeout=60)
             response.raise_for_status()
 
             job_data = response.json()
@@ -90,7 +90,7 @@ class RunPodClient:
         start_time = time.time()
 
         while time.time() - start_time < settings.RUNPOD_TIMEOUT_SECONDS:
-            response = requests.get(status_url, headers=self.headers)
+            response = requests.get(status_url, headers=self.headers, timeout=60)
             response.raise_for_status()
 
             data = response.json()

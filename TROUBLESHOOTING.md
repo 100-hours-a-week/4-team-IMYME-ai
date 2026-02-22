@@ -362,24 +362,27 @@ for (EvaluationDecision decision : evalResult.results()) {
 user_text: str = Field(..., alias="userText", ...)
 ```
 
-### 13.4. 안전성 분석 (Safety Analysis)
-#### ✅ 안전한 이유: Defense-in-Depth (다층 방어)
-빈 문자열이 스키마를 통과하더라도, 서비스 레이어에서 안전하게 처리됨:
+## 14. STT Hallucination 및 무음 처리 개선
 
-| 단계 | 위치 | 동작 |
-|------|------|------|
-| ① API Layer | `endpoints/solo.py` | 빈 문자열 수신 → 202 Accepted (즉시 접수) |
-| ② Background Task | `analysis_service.py` (Line 43) | `len(user_text.strip()) < 5` 체크 → LLM 호출 **건너뜀** |
-| ③ Result | `task_store` | `COMPLETED` 상태로 0점 + 안내 피드백 저장 |
+### 14.1. 문제 상황 (Issue)
+- **증상**: 오디오의 무음 구간이나 잡음 구간에서 "MBC 뉴스", "시청해 주셔서 감사합니다" 등의 뜬금없는 텍스트(Hallucination)가 생성됨.
+- **원인**: Whisper 모델의 특성상 침묵 구간에서 언어 모델의 확률 분포가 높은 상용구(훈련 데이터 편향)를 생성하려는 경향이 있음.
 
-- **Main Server 안정성 확보**: 이제 Main Server는 예외 상황(빈 텍스트)에서도 정상적인 분석 완료 응답을 받을 수 있어 무한 대기 문제가 해결됨.
-- **LLM 비용 절감**: 5글자 미만은 API 호출 없이 처리됨.
-- **예외 처리 간소화**: Main Server가 별도의 400 에러 핸들링 로직을 복잡하게 구현할 필요 없이, 표준 프로세스대로 처리 가능.
+### 14.2. 해결 방안 (Solution)
+`4-team-IMYME-ai/stt_server`에 VAD(Voice Activity Detection)를 적용하고, 침묵 감지 로직을 강화하여 무음 구간의 입력을 원천 차단함.
 
-### 13.5. 변경된 API 동작 비교
+#### 적용된 기술적 조치
+1.  **VAD 활성화 (`VAD_FILTER = True`)**
+    *   `faster-whisper` 내장 Silero VAD를 사용하여 음성이 아닌 구간을 전사 전에 필터링.
+2.  **침묵 임계값 강화**
+    *   `min_silence_duration_ms = 500`: 0.5초 이상의 침묵은 과감히 제거 (기본값보다 엄격하게).
+    *   `no_speech_threshold = 0.4`: 모델이 "침묵"이라고 판단하는 확률 기준을 낮춰 민감하게 반응하도록 설정 (기본값 0.6 → 0.4).
+    *   `hallucination_silence_threshold = 2.0`: 2초 이상 침묵으로 판단된 구간에서 텍스트가 나오면 강제로 무시.
+3.  **루프 방지 (`condition_on_previous_text = False`)**
+    *   이전 문맥에 의존하지 않도록 하여, 한번 발생한 환각이 다음 문장으로 이어지는 반복(Loop) 현상 차단.
+4.  **결정론적 추론 (`Temperature = 0.0`)**
+    *   Random Sampling을 방지하여 모델이 불확실한 구간에서 창의적인 오답을 내놓지 못하게 고정.
 
-| 입력 | 변경 전 | 변경 후 |
-|------|---------|---------|
-| `"userText": ""` | ❌ 400 Bad Request → **Main Server 무한 대기** | ✅ 202 Accepted → 0점 완료 (정상 종료) |
-| `"userText": "안녕"` (1~4자) | ✅ 202 Accepted → 0점 | ✅ 202 Accepted → 0점 |
-| `"userText": "프로세스란..."` (5자+) | ✅ 202 Accepted → 정상 분석 | ✅ 202 Accepted → 정상 분석 |
+### 14.3. 변경 파일
+- `4-team-IMYME-ai/stt_server/config.py`: 파라미터 상수 정의.
+- `4-team-IMYME-ai/stt_server/services/inference_service.py`: `model.transcribe()` 호출 시 파라미터 주입 로직 추가.
