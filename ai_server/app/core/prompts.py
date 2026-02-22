@@ -255,4 +255,3 @@ PVP_PERSONA_PROMPTS = {
     - **Personalized Writing Style**: "두 분의 대결은 치열했지만, 놀랍게도 두 분 모두 [Keyword Z]에 대해서는 침묵하셨네요. 이 빈틈을 먼저 채우는 쪽이 상위 1%가 될 수 있습니다!"
     """,
 }
-
