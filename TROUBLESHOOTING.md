@@ -386,3 +386,51 @@ user_text: str = Field(..., alias="userText", ...)
 ### 14.3. 변경 파일
 - `4-team-IMYME-ai/stt_server/config.py`: 파라미터 상수 정의.
 - `4-team-IMYME-ai/stt_server/services/inference_service.py`: `model.transcribe()` 호출 시 파라미터 주입 로직 추가.
+
+## 15. RunPod STT Timeout 및 RabbitMQ Queue 무한 대기 (Hang) 이슈
+
+### 15.1. 문제 상황 (Problem)
+- **증상**: 로컬 환경에서 PvP E2E 테스트를 진행할 때, 특정 상황(예: 유효하지 않은 오디오 URL 전달, RunPod 서버 지연 등)에서 STT Worker가 전혀 응답하지 않고 **영원히 멈춰있는(Hang) 현상** 발생.
+- **영향**: RabbitMQ 큐(`pvp.stt.request`)에 쌓인 메시지가 처리되지 않은 상태(Unacked)로 계속 머물러 있어, 전체 파이프라인의 데드락을 유발함.
+
+### 15.2. 원인 분석 (Root Cause)
+- Python의 `requests` 라이브러리는 HTTP 통신을 수행할 때 `timeout` 파라미터를 명시하지 않으면, 서버가 연결을 끊어주지 않는 한 **무한정 응답을 기다리게 됨**.
+- AI Server의 `runpod_client.py`에서 RunPod API로 작업 요청(`requests.post`) 및 상태 확인(`requests.get`)을 보낼 때 타임아웃 셋팅이 누락되어 있었음.
+
+### 15.3. 해결 방안 (Solution)
+모든 RunPod 외부 API 호출부에 **명시적인 Timeout(예: 60초)**을 추가하여 무한 루프를 방지.
+
+```python
+# 수정 전 (app/services/runpod_client.py)
+response = requests.post(run_url, headers=self.headers, json=payload)
+
+# 수정 후: 60초 타임아웃 추가
+response = requests.post(run_url, headers=self.headers, json=payload, timeout=60)
+```
+
+**효과**: RunPod 서버가 60초 내에 응답하지 않으면 코드에서 즉시 `requests.exceptions.Timeout` 예외를 발생시킴. 이를 통해 STT Worker의 기본 에러 핸들링 로직이 작동하여, 해당 요청을 건너뛰고 큐 메시지를 정상적으로 실패(`.status = "FAIL"`)로 후처리할 수 있게 됨.
+
+## 16. RabbitMQ DLQ 및 3회 재시도(Retry) 작동 불능 방지
+
+### 16.1. 문제 상황 (Problem)
+- **증상**: 일시적인 네트워크 오류나 RunPod 지연이 발생했을 때, 메시지가 RabbitMQ의 재시도 큐(Retry Queue)를 통해 3번 재시도되지 않고 **단 1회 실패 후 즉시 종료(FAIL 발행)**됨.
+- **원인**: Worker (`stt_worker.py`, `feedback_worker.py`) 코드 내부에 `try...except Exception as e:` 블록이 존재하여, 모든 예외를 스스로 먹고(Swallow) 직접 FAIL 응답을 쏜 뒤 함수를 정상 종료해버림. 이로 인해 인프라 레이어(`rabbitmq_service.py`)는 "작업이 성공적으로 끝났다"고 착각하고 메시지를 `Ack` 처리하여 재시도/DLQ 로직이 완전히 무력화됨.
+
+### 16.2. 해결 방안 (Solution)
+Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Raise) **RabbitMQ 서비스 레이어로 에러 핸들링을 위임**하는 구조로 전면 개편.
+
+1. **Worker 레이어 개편 (Exception Propagation)**
+    - 워커의 비즈니스 로직을 감싸던 `try/except` 블록을 제거.
+    - 비즈니스/네트워크 예외 발생 시 Python의 기본 예외 전파(Propagation)를 통해 콜백 바깥으로 튕겨나가게 함.
+
+2. **RabbitMQ 인프라 레이어 보강 (`rabbitmq_service.py`)**
+    - `on_message` 핸들러의 `except Exception` 블록에서 에러를 캐치.
+    - **1~2차 실패**: 메시지를 `reject(requeue=False)`하여 5초 TTL이 걸린 재시도 큐로 라우팅.
+    - **3차 최종 실패 (`retry_count >= 2`)**: 
+        - 원본 메시지를 DLQ(`pvp.match.dlq`)로 이동 보관하여 추후 원인 분석 및 재처리 지원.
+        - 매칭이 무한 로딩에 빠지지 않도록 3번째 실패 시점에만 메인 서버로 `FAIL` 전문을 즉시 조립하여 Publish (`pvp.stt.response` 등).
+
+### 16.3. 효과 (Result)
+- 일시적 장애 발생 시 최대 3번(10초)까지 인프라 복원력을 확보하여 **억울한 FAIL 응답 감소**.
+- 에러 원본 페이로드가 파괴되지 않고 DLQ에 보존되어 **개발자 디버깅(Replay) 편의성 극대화**.
+
