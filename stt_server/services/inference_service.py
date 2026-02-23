@@ -4,6 +4,7 @@ from utils.audio_loader import AudioLoader
 
 # Removed dependency on app.schemas
 import logging
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,20 @@ class InferenceService:
             # 3. Transcribe
             logger.info("Starting transcription...")
             # beam_size=5 is a common default
+            # Updated with VAD & Hallucination Prevention settings
             segments_generator, info = model.transcribe(
-                temp_file_path, beam_size=5, language=language
+                temp_file_path,
+                beam_size=5,
+                language=language,
+                # [VAD & Hallucination Prevention]
+                vad_filter=settings.VAD_FILTER,
+                vad_parameters=dict(
+                    min_silence_duration_ms=settings.MIN_SILENCE_DURATION_MS
+                ),
+                condition_on_previous_text=settings.CONDITION_ON_PREVIOUS_TEXT,
+                no_speech_threshold=settings.NO_SPEECH_THRESHOLD,
+                hallucination_silence_threshold=settings.HALLUCINATION_SILENCE_THRESHOLD,
+                temperature=settings.TEMPERATURE,
             )
 
             segments = list(segments_generator)
