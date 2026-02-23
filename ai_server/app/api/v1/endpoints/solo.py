@@ -9,6 +9,8 @@ from app.schemas.solo import (
 )
 from app.services.task_service import task_service
 from app.services.analysis_service import analysis_service
+from app.core.errors import ErrorCode
+from app.schemas.common import create_error_response
 import logging
 
 router = APIRouter()
@@ -46,18 +48,12 @@ async def submit_analysis(
 
     except Exception as e:
         logger.error(f"Submission failed: {e}")
-        # 400 or 500 depending on error, but typically Pydantic catches 400.
-        # Unknown error is 500.
         return JSONResponse(
             status_code=500,
-            content={
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "INTERNAL_ERROR",
-                    "msg": "Internal Server Error during submission",
-                },
-            },
+            content=create_error_response(
+                code=ErrorCode.INTERNAL_ERROR,
+                message="분석 작업 등록 중 오류가 발생했습니다.",
+            ),
         )
 
 
@@ -73,18 +69,13 @@ async def get_analysis_result(
 
     # To match strictly:
     if not task_data:
-        # Return 200/404 with Custom Error Body matching SoloResultResponse
-        # User Spec: HTTP 404 & Error Code TASK_NOT_FOUND
         return JSONResponse(
             status_code=404,
-            content={
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "TASK_NOT_FOUND",
-                    "msg": "존재하지 않거나 만료된 작업입니다.",
-                },
-            },
+            content=create_error_response(
+                code=ErrorCode.TASK_NOT_FOUND,
+                message="존재하지 않거나 만료된 작업입니다.",
+                detail={"attemptId": attempt_id},
+            ),
         )
 
     # Map TaskStore dict to Response Schema

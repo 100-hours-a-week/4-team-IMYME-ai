@@ -13,7 +13,6 @@ class SoloSubmissionRequest(BaseModel):
     user_text: str = Field(
         ...,
         alias="userText",
-        min_length=1,
         description="Step 1에서 변환된 사용자 발화 텍스트",
     )
     criteria: Dict[str, Any] = Field(..., description="정답지 및 모델 가이드 (JSON)")

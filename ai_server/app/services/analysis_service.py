@@ -3,6 +3,7 @@ import logging
 from app.services.task_store import task_store
 from app.services.scoring_service import scoring_service
 from app.services.feedback_service import feedback_service
+from app.core.errors import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +29,37 @@ class AnalysisService:
 
         try:
             # 1. Validation Logic
-            if len(user_text.strip()) < 5:
-                # Logic Failure: TEXT_TOO_SHORT
-                logger.warning(f"Task {task_id}: Text too short.")
+            if not criteria:
                 task_store.save_task(
                     task_id,
                     "FAILED",
                     error={
-                        "code": "TEXT_TOO_SHORT",
-                        "msg": "내용이 너무 짧아 분석할 수 없습니다.",
+                        "code": ErrorCode.INVALID_CRITERIA.value,
+                        "message": "분석 기준(Criteria)이 누락되었습니다.",
                     },
                 )
+                return
+
+            if len(user_text.strip()) < 5:
+                # Skip LLM and return hardcoded feedback (Business Logic: Not an error, just low score)
+                # If strict error is needed, we could use ErrorCode.TEXT_TOO_SHORT here.
+                logger.info(
+                    f"Task {task_id}: Text too short (< 5 chars). Returning hardcoded feedback."
+                )
+
+                final_result = {
+                    "overall_score": 0,
+                    "level": 1,
+                    "feedback": {
+                        "summarize": "입력된 내용이 너무 짧거나 인식이 되지 않았습니다.",
+                        "keyword": ["음성 인식 실패", "짧은 답변"],
+                        "facts": "분석할 텍스트가 부족합니다.",
+                        "understanding": "사용자의 의도를 파악하기 어렵습니다.",
+                        "personalized": "조금 더 길게 말씀해주시거나, 다시 시도 부탁드립니다.",
+                    },
+                }
+
+                task_store.save_task(task_id, "COMPLETED", result=final_result)
                 return
 
             # 2. Parallel Execution (Scoring + Feedback)
@@ -65,9 +86,22 @@ class AnalysisService:
 
         except Exception as e:
             logger.error(f"Task {task_id}: Failed with error {e}")
-            # Map exception to error code if needed, generic for now
+
+            error_msg = str(e).lower()
+            code = ErrorCode.INTERNAL_ERROR
+
+            if "llm" in error_msg or "gemini" in error_msg or "500" in error_msg:
+                code = ErrorCode.LLM_PROVIDER_ERROR
+            elif "embedding" in error_msg or "vector" in error_msg:
+                code = ErrorCode.EMBEDDING_FAILURE
+
             task_store.save_task(
-                task_id, "FAILED", error={"code": "INTERNAL_ERROR", "msg": str(e)}
+                task_id,
+                "FAILED",
+                error={
+                    "code": code.value,
+                    "message": f"분석 처리 중 오류가 발생했습니다. ({code.value})",
+                },
             )
 
 
