@@ -224,9 +224,7 @@ class RabbitMQService:
                                 f"for match={fail_response['match_id']}"
                             )
                         except Exception as fail_err:
-                            logger.error(
-                                f"Failed to publish FAIL response: {fail_err}"
-                            )
+                            logger.error(f"Failed to publish FAIL response: {fail_err}")
 
                     logger.error(
                         f"Message moved to DLQ after {MAX_RETRY_COUNT} retries."
