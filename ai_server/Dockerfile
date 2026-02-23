@@ -34,6 +34,7 @@ WORKDIR /app
 # torch/sentence-transformers 런타임에서 필요한 라이브러리(특히 libgomp1)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # 빌드 단계에서 생성된 wheel 복사 및 설치
