@@ -1,0 +1,24 @@
+services:
+  ai-server:
+    image: 219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:release-latest
+    container_name: imyme-ai-server
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    restart: unless-stopped
+    platform: linux/arm64
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - imyme-network
+
+networks:
+  imyme-network:
+    driver: bridge
