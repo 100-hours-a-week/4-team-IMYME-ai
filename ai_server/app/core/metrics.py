@@ -21,8 +21,8 @@ from typing import Any
 import psutil
 
 # ─── tunables ────────────────────────────────────────────────────────────────
-MAX_SAMPLES = 2_000          # latency ring buffer size
-TIMESTAMP_WINDOW = 60.0      # seconds kept in the RPS deque
+MAX_SAMPLES = 2_000  # latency ring buffer size
+TIMESTAMP_WINDOW = 60.0  # seconds kept in the RPS deque
 # ─────────────────────────────────────────────────────────────────────────────
 
 _lock = threading.Lock()
@@ -42,6 +42,7 @@ _process = psutil.Process()
 
 
 # ─── public API ──────────────────────────────────────────────────────────────
+
 
 def record_request(latency_ms: float, status_code: int) -> None:
     """Call this after each HTTP response is sent."""
@@ -71,6 +72,7 @@ def get_metrics() -> dict[str, Any]:
 
 
 # ─── internals ───────────────────────────────────────────────────────────────
+
 
 def _percentile(sorted_data: list[float], pct: float) -> float:
     """Return the pct-th percentile of a pre-sorted list (0–100)."""
