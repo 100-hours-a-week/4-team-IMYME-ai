@@ -64,28 +64,78 @@ jobs:
     if: success()
     runs-on: ubuntu-latest
     steps:
+      - name: Pick a quote
+        id: quote
+        run: |
+          QUOTES=(
+            "작은 성공이 쌓여 큰 성공이 됩니다. 오늘도 잘 하고 있어요! 💪"
+            "완벽한 코드보다 동작하는 코드가 먼저입니다. 잘 해냈어요! 🚀"
+            "테스트를 통과했다는 건, 어제보다 더 나아졌다는 증거입니다. ✨"
+            "좋은 코드는 팀의 자산입니다. 오늘도 자산을 늘렸네요! 💎"
+            "CI가 초록불이면 오늘 하루는 성공입니다. 수고했어요! 🌿"
+            "버그를 잡을 때마다 더 강해집니다. 오늘도 승리! ⚔️"
+            "코드 한 줄 한 줄이 여러분의 땀과 노력입니다. 대단해요! 🔥"
+            "린트도 통과, 테스트도 통과 — 오늘의 MVP는 여러분입니다! 🏆"
+          )
+          IDX=$(( RANDOM % ${#QUOTES[@]} ))
+          echo "msg=${QUOTES[$IDX]}" >> $GITHUB_OUTPUT
+
       - name: Discord CI success
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: success
-          title: "🟢 AI CI Success"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 성공!"
-          color: 0x00FF00
+          title: "✅ AI CI 통과"
+          description: |
+            **브랜치:** `${{ github.ref_name }}`
+            **커밋:** [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **트리거:** ${{ github.actor }}
+
+            > ${{ steps.quote.outputs.msg }}
+          content: "<@&${{ secrets.AI_ROLE_ID }}> 린트·테스트 모두 통과했어요 🎉"
+          color: 0x57F287
+          url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          username: "IMYME AI Bot"
+          nocontext: true
 
   ci-notify-failure:
     needs: ci
     if: failure()
     runs-on: ubuntu-latest
     steps:
+      - name: Pick a quote
+        id: quote
+        run: |
+          QUOTES=(
+            "실패는 성공의 어머니입니다. 로그 보고 다시 도전! 💡"
+            "버그는 개발자의 숙명입니다. 같이 잡아봐요! 🐛"
+            "에러 메시지는 친절한 힌트입니다. 잘 읽어보면 답이 있어요! 🔍"
+            "오늘 실패한 테스트는 내일의 더 단단한 코드를 만듭니다. 🏗️"
+            "이건 실패가 아니라 '작동 안 하는 방법을 발견한 것'입니다. — 에디슨 🧪"
+            "같이 보면 금방 해결됩니다. 팀을 믿어요! 🤝"
+            "CI가 빨간불이면 커피 한 잔 마시고 다시 봐요. ☕"
+            "이 에러 한 번 더 보면 다시는 안 냅니다. 화이팅! 🔧"
+          )
+          IDX=$(( RANDOM % ${#QUOTES[@]} ))
+          echo "msg=${QUOTES[$IDX]}" >> $GITHUB_OUTPUT
+
       - name: Discord CI failure
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: failure
-          title: "🔴 AI CI Failed"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI CI 실패!"
-          color: 0xFF0000
+          title: "❌ AI CI 실패"
+          description: |
+            **브랜치:** `${{ github.ref_name }}`
+            **커밋:** [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **트리거:** ${{ github.actor }}
+
+            > ${{ steps.quote.outputs.msg }}
+          content: "<@&${{ secrets.AI_ROLE_ID }}> CI가 터졌어요! 빠른 확인 부탁드려요 🔥"
+          color: 0xED4245
+          url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          username: "IMYME AI Bot"
+          nocontext: true
 
   # 2) CD
   cd:
@@ -346,25 +396,73 @@ jobs:
     if: success()
     runs-on: ubuntu-latest
     steps:
+      - name: Pick a quote
+        id: quote
+        run: |
+          QUOTES=(
+            "코드가 서버에 살아 숨쉬고 있어요. 여러분 덕분입니다! 🌟"
+            "배포 성공은 팀워크의 결실입니다. 모두 수고했어요! 🎊"
+            "사용자들이 여러분의 노력을 경험하게 됩니다. 최고예요! 🙌"
+            "새 버전이 세상에 나왔습니다. 오늘도 세상을 조금 더 나은 곳으로! 🌍"
+            "배포 완료 = 오늘 하루 임무 완수. 퇴근각 잡으세요! 🏠"
+            "여러분이 만든 코드가 지금 이 순간 실행되고 있습니다. 뿌듯하죠? 😎"
+            "성공적인 배포는 수많은 고민과 노력의 결과입니다. 대단해요! 💫"
+          )
+          IDX=$(( RANDOM % ${#QUOTES[@]} ))
+          echo "msg=${QUOTES[$IDX]}" >> $GITHUB_OUTPUT
+
       - name: Discord CD success
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: success
-          title: "🟢 AI Deploy Success"
-          content: "AI 서버 개발 서버 배포 완료!"
-          color: 0x00FF00
+          title: "🚀 AI 개발 서버 배포 완료"
+          description: |
+            **브랜치:** `${{ github.ref_name }}`
+            **커밋:** [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **배포자:** ${{ github.actor }}
+
+            > ${{ steps.quote.outputs.msg }}
+          content: "AI 개발 서버에 새 버전이 반영됐어요 ✨"
+          color: 0x57F287
+          url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          username: "IMYME AI Bot"
+          nocontext: true
 
   cd-notify-failure:
     needs: cd
     if: failure()
     runs-on: ubuntu-latest
     steps:
+      - name: Pick a quote
+        id: quote
+        run: |
+          QUOTES=(
+            "배포는 실패했지만 여러분은 실패하지 않았어요. 같이 해결해봐요! 💪"
+            "서버도 가끔 쉬고 싶어합니다. 로그 보면서 같이 달래줘요 😅"
+            "이 에러는 분명 나중에 좋은 이야기가 됩니다. 지금은 힘내요! 🌈"
+            "배포 실패는 더 좋은 코드로 가는 길목입니다. 포기하지 마요! 🛤️"
+            "오류 하나 고칠 때마다 더 단단한 개발자가 됩니다. 화이팅! ⚡"
+            "지금 이 상황, 분명 해결됩니다. 팀을 믿어요! 🤜🤛"
+            "커피 한 잔 마시고 로그 다시 보면 답 보입니다. ☕ 파이팅!"
+          )
+          IDX=$(( RANDOM % ${#QUOTES[@]} ))
+          echo "msg=${QUOTES[$IDX]}" >> $GITHUB_OUTPUT
+
       - name: Discord CD failure
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: failure
-          title: "🔴 AI Deploy Failed"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 개발 서버 배포 실패!"
-          color: 0xFF0000
+          title: "💥 AI 개발 서버 배포 실패"
+          description: |
+            **브랜치:** `${{ github.ref_name }}`
+            **커밋:** [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})
+            **배포자:** ${{ github.actor }}
+
+            > ${{ steps.quote.outputs.msg }}
+          content: "<@&${{ secrets.AI_ROLE_ID }}> 배포가 실패했어요! 로그 확인해주세요 🚨"
+          color: 0xED4245
+          url: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          username: "IMYME AI Bot"
+          nocontext: true
