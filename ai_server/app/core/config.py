@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     # Internal Secret for Middleware Auth
     INTERNAL_SECRET_KEY: str = ""
 
+    # RabbitMQ Configuration (PvP Mode)
+    # RabbitMQ 설정 (PvP 모드)
+    RABBITMQ_URL: str = ""
+    STT_REQUEST_QUEUE: str = "pvp.stt.request"
+    STT_RESULT_QUEUE: str = "pvp.stt.response"
+    FEEDBACK_REQUEST_QUEUE: str = "pvp.feedback.request"
+    FEEDBACK_RESULT_QUEUE: str = "pvp.feedback.response"
+    PVP_EXCHANGE: str = "pvp.direct"
+    PVP_DLQ: str = "pvp.match.dlq"
+
     class Config:
         # Load settings from .env file if present
         # .env 파일이 존재하면 설정을 로드함
