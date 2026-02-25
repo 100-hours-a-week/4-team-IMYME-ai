@@ -1,3 +1,5 @@
+import time
+
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
@@ -8,6 +10,7 @@ from app.core.exception_handlers import add_exception_handlers
 from app.core.errors import ErrorCode
 from app.schemas.common import create_error_response
 import asyncio
+from app.core import metrics
 import logging
 
 # Configure logging
@@ -79,6 +82,7 @@ async def verify_internal_secret(request: Request, call_next):
 
     if path in [
         "/health",
+        "/metrics",
         "/docs",
         "/openapi.json",
         "/",
@@ -105,6 +109,19 @@ async def verify_internal_secret(request: Request, call_next):
     return response
 
 
+# ── Latency middleware (runs after auth middleware) ───────────────────────────
+@app.middleware("http")
+async def record_latency(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    try:
+        metrics.record_request(elapsed_ms, response.status_code)
+    except Exception:
+        pass  # never let metrics break the response
+    return response
+
+
 # Include API routers
 # API 라우터 포함
 app.include_router(api_router, prefix=settings.API_V1_STR)
@@ -123,6 +140,14 @@ def health_check():
     Load Balancer Health Check
     """
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def get_metrics():
+    """
+    In-process metrics: latency, throughput, resource utilization.
+    """
+    return metrics.get_metrics()
 
 
 if __name__ == "__main__":

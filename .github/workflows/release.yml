@@ -1,15 +1,15 @@
-name: AI CI/CD Docker main
+name: AI CI/CD release
 
 on:
   pull_request:
     branches:
-      - main
+      - release
     paths:
       - ".github/**"
       - "ai_server/**"
   push:
     branches:
-      - main
+      - release
     paths:
       - ".github/**"
       - "ai_server/**"
@@ -90,7 +90,7 @@ jobs:
   # 2) CD
   cd:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
 
     steps:
@@ -123,7 +123,7 @@ jobs:
           platforms: linux/arm64
           tags: |
             219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:${{ github.sha }}
-            219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:prod-latest
+            219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:release-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -132,7 +132,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          IMAGE_URI="219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:prod-latest"
+          IMAGE_URI="219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:release-latest"
 
           cat > /tmp/ssm-params.json << 'EOF'
           {
@@ -144,9 +144,9 @@ jobs:
               "echo '# ------------- COMMON --------------' >> /home/ubuntu/.env",
               "aws ssm get-parameters-by-path --path '/MINE/MVP1/AI/ENV/COMMON' --with-decryption --query 'Parameters[*].[Name,Value]' --output text --region ap-northeast-2 | while IFS=$(printf '\\t') read -r name value; do key=$(basename \"$name\"); echo \"$key=${value:-}\" >> /home/ubuntu/.env; done",
               "echo '' >> /home/ubuntu/.env",
-              "echo '# ------------- PROD --------------' >> /home/ubuntu/.env",
-              "aws ssm get-parameters-by-path --path '/MINE/MVP1/AI/ENV/PROD' --with-decryption --query 'Parameters[*].[Name,Value]' --output text --region ap-northeast-2 | while IFS=$(printf '\\t') read -r name value; do key=$(basename \"$name\"); echo \"$key=${value:-}\" >> /home/ubuntu/.env; done",
-              "IMAGE_URI=219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:prod-latest",
+              "echo '# ------------- RELEASE --------------' >> /home/ubuntu/.env",
+              "aws ssm get-parameters-by-path --path '/MINE/MVP1/AI/ENV/RELEASE' --with-decryption --query 'Parameters[*].[Name,Value]' --output text --region ap-northeast-2 | while IFS=$(printf '\\t') read -r name value; do key=$(basename \"$name\"); echo \"$key=${value:-}\" >> /home/ubuntu/.env; done",
+              "IMAGE_URI=219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:release-latest",
               "docker pull $IMAGE_URI",
               "docker compose up -d",
               "docker image prune -f"
@@ -156,8 +156,8 @@ jobs:
 
           COMMAND_ID=$(aws ssm send-command \
             --document-name "AWS-RunShellScript" \
-            --targets "Key=tag:aws:autoscaling:groupName,Values=mine_mvp1_ai_asg-prod" \
-            --comment "AI prod deploy (${GITHUB_SHA})" \
+            --targets "Key=tag:aws:autoscaling:groupName,Values=mine_mvp1_ai_asg" \
+            --comment "AI release deploy (${GITHUB_SHA})" \
             --parameters file:///tmp/ssm-params.json \
             --region ap-northeast-2 \
             --query "Command.CommandId" \
@@ -204,7 +204,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          BASE_URL="${{ secrets.PROD_BASE_URL }}"
+          BASE_URL="${{ secrets.RELEASE_BASE_URL }}"
 
           echo "🔎 Smoke 1) /ai/health should return 200"
           # 1. 헬스체크 (최대 120초 대기)
@@ -267,7 +267,7 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: success
           title: "🟢 AI Deploy Success"
-          content: "AI 서버 운영 서버 배포 완료!"
+          content: "AI 서버 릴리즈 서버 배포 완료!"
           color: 0x00FF00
 
   cd-notify-failure:
@@ -281,5 +281,5 @@ jobs:
           webhook: ${{ secrets.DISCORD_WEBHOOK_AI }}
           status: failure
           title: "🔴 AI Deploy Failed"
-          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 운영 서버 배포 실패!"
+          content: "<@&${{ secrets.AI_ROLE_ID }}> AI 릴리즈 서버 배포 실패!"
           color: 0xFF0000
