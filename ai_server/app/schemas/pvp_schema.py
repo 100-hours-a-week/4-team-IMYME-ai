@@ -100,5 +100,7 @@ class FeedbackResponse(BaseModel):
 
     room_id: int = Field(..., description="방 ID")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
-    feedbacks: Optional[List[PvpUserFeedback]] = Field(None, description="비교 피드백 결과 배열")
+    feedbacks: Optional[List[PvpUserFeedback]] = Field(
+        None, description="비교 피드백 결과 배열"
+    )
     error: Optional[str] = Field(None, description="실패 시 에러 메시지")
