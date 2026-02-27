@@ -162,7 +162,7 @@ class RabbitMQService:
                 body = json.loads(message.body.decode())
                 logger.info(
                     f"Consumed from '{queue_name}' (retry: {retry_count}): "
-                    f"match_id={body.get('match_id', 'N/A')}"
+                    f"room_id={body.get('room_id', 'N/A')}"
                 )
 
                 # Execute business logic callback (worker handler)
@@ -208,7 +208,7 @@ class RabbitMQService:
                         try:
                             original_body = json.loads(message.body.decode())
                             fail_response = {
-                                "match_id": original_body.get("match_id", "unknown"),
+                                "room_id": original_body.get("room_id", 0),
                                 "status": "FAIL",
                                 "error": (
                                     f"Message failed after {MAX_RETRY_COUNT} "
@@ -218,10 +218,13 @@ class RabbitMQService:
                             # Include user_id for STT responses
                             if "user_id" in original_body:
                                 fail_response["user_id"] = original_body["user_id"]
+                            # Include feedbacks:null for Feedback responses
+                            if "users" in original_body:
+                                fail_response["feedbacks"] = None
                             await self.publish(response_queue, fail_response)
                             logger.info(
                                 f"Published FAIL response to '{response_queue}' "
-                                f"for match={fail_response['match_id']}"
+                                f"for room={fail_response['room_id']}"
                             )
                         except Exception as fail_err:
                             logger.error(f"Failed to publish FAIL response: {fail_err}")

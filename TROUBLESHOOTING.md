@@ -434,3 +434,130 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 - 일시적 장애 발생 시 최대 3번(10초)까지 인프라 복원력을 확보하여 **억울한 FAIL 응답 감소**.
 - 에러 원본 페이로드가 파괴되지 않고 DLQ에 보존되어 **개발자 디버깅(Replay) 편의성 극대화**.
 
+
+## 17. LLM-as-a-Judge 위치 편향(Positional Bias) 및 Logprobs 추출 이슈
+
+### 17.1. 문제 상황 (Problem)
+- **증상 1 (위치 편향)**: 두 개의 답변(A, B)을 비교 평가하는 프롬프트에서, `gemini-2.5-flash` 모델이 **실제 품질과 무관하게 항상 두 번째(B) 혹은 첫 번째(A) 위치의 답변을 승자로 선택**하는 극단적인 위치 편향(Positional Bias) 현상이 확인됨.
+- **증상 2 (Logprobs 추출 실패)**: 편향을 수학적으로 교정하기 위해 PAIRS(Pairwise-preference Search) 기법을 도입하여 토큰 확률(logprobs)을 추출하려 했으나, 일반 API Key 환경에서는 `Logprobs is not enabled` 에러가 발생.
+- **증상 3 (Thinking 토큰 충돌)**: Vertex AI로 전환 후, 출력 토큰을 1개로 제한(`max_output_tokens=1`)하여 정답("1" 또는 "2")의 확률만 추출하려 했으나, 최신 Flash 모델들의 사전 내부 추론(Thinking) 기능이 발동되어 첫 토큰으로 `<thought>` 등을 출력하다가 잘려버림. 이로 인해 결과 텍스트가 빈 문자열(`EMPTY`)로 반환되고 필요한 logprobs를 얻지 못함.
+
+### 17.2. 원인 분석 (Root Cause)
+1. **API 권한**: Gemini 모델의 `logprobs` 기능은 철저히 **Google Cloud Vertex AI** 환경 전용으로 제한되어 있었음.
+2. **디코딩(Decoding) 간섭**: `max_output_tokens=1` 방식은 모델의 생성 "길이"만 자를 뿐, 모델이 어떤 단어를 선택할지(확률 공간)는 제어하지 못함. "Thinking" 모델들은 본능적으로 추론 토큰을 먼저 생성하려 하므로, 길이가 1로 제한된 상태에서는 정답 토큰("1", "2")에 도달하기 전에 응답이 강제 종료됨.
+
+### 17.3. 해결 방안 (Solution)
+**Constrained Decoding (제약 기반 디코딩) 및 Vertex AI 도입**
+
+1. **Vertex AI 클라이언트로 마이그레이션**:
+   - `google.genai` SDK 사용 및 `genai.Client(vertexai=True, project=..., location=...)` 로 초기화.
+   - 호환성을 위해 `gcloud auth application-default login`을 통해 로컬 인증 자격 증명(ADC) 설정.
+
+2. **Enum Schema를 통한 출력 제약 (Constrained Decoding)**:
+   - `max_output_tokens=1` 옵션을 제거하고, **공식 권장 방식인 `text/x.enum` 스키마 제약**으로 전면 교체.
+   ```python
+   # 수정 후: 스키마를 통해 출력 풀(Pool)을 아예 "1", "2"로 물리적 격리
+   config = types.GenerateContentConfig(
+       response_mime_type="text/x.enum",
+       response_schema={"type": "STRING", "enum": ["1", "2"]},
+       response_logprobs=True,
+       logprobs=5
+   )
+   ```
+   - **원리**: 모델의 예측 확률 공간 자체를 `["1", "2"]` 두 단어로 강제 제한함. 모델은 내부 추론(`<thought>`)을 하고 싶어도 해당 토큰이 허용되지 않으므로, 추론 과정을 건너뛰고 즉각적으로 "1" 또는 "2"에 대한 Logprob을 계산하여 반환하게 됨.
+
+### 17.4. 결과 및 효과 (Results)
+- **Logprob 정상 추출**: `gemini-3-flash-preview` 등 최신 Thinking 모델에서도 에러나 빈 응답 없이 "1"과 "2"의 토큰 확률 데이터를 안정적으로 얻어냄.
+- **편향의 원천 차단 (Surprise Finding)**: Enum Schema로 디코딩을 강하게 제약한 결과, 원래 순서와 무관하게 2번을 뽑던 편향 모델이 **Raw 텍스트 판정 단계에서부터 편향 없이 항상 더 나은 정답을(100%) 고르는 부수적인 효과(Debiasing Effect)**까지 달성함.
+- **최종 보정**: 추출된 Logprobs를 Softmax 정규화 및 양방향[A-B, B-A] 평균 교정(Bradley-Terry Model)에 사용하여, $\approx 99.7\%$의 매우 안정적이고 신뢰도 높은 확신 점수(Confidence Score)를 확보.
+
+
+## 18. RabbitMQ 큐 미생성 및 연결 실패 (Docker 네트워크 이슈)
+
+### 18.1. 문제 상황 (Problem)
+- **증상 1**: AI 서버 배포(CD) 후 RabbitMQ Management UI(`15671`)에 큐가 0개로 표시됨.
+- **증상 2**: AI 서버 로그에서 `CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'` 에러 발생 후, `[Errno 111] Connect call failed ('127.0.0.1', 5672)` 에러가 5초 간격으로 무한 반복.
+    ```
+    ERROR:aiormq.connection:Unexpected connection close from remote
+      "amqp://admin:******@localhost:5672/",
+      Connection.Close(reply_code=320,
+      reply_text="CONNECTION_FORCED - broker forced connection closure
+                   with reason 'shutdown'")
+
+    ERROR:aiormq.connection:error when creating transport:
+      <AMQPConnectionError: (111, "Connect call failed ('127.0.0.1', 5672)")>
+    ```
+- **증상 3**: RabbitMQ Management UI 접속 시 `15672`는 흰 화면(접속 불가), `15671`에서만 접속 가능하나 큐가 비어있음.
+
+### 18.2. 원인 분석 (Root Cause)
+
+1. **Docker 네트워크 격리**: RabbitMQ 컨테이너의 포트가 `127.0.0.1:5672->5672/tcp`로 바인딩되어 있어 호스트 루프백에서만 접속 가능. AI 서버가 도커 컨테이너 내부에서 `localhost`를 호출하면 자기 자신(AI 컨테이너)을 가리키게 됨.
+2. **컨테이너 재시작 타이밍**: RabbitMQ 도커 컨테이너를 재시작하면서 기존 연결이 `CONNECTION_FORCED`로 강제 종료되었고, 재시작 완료 전에 AI 서버가 재접속을 시도하여 `Connection Refused` 발생.
+3. **레거시 프로세스 잔존**: AI 서버가 Docker 배포본이 아닌 우분투 OS에 직접 설치된 구버전 프로세스(PM2)로 실행되고 있었으며, `/home/ubuntu/mine/ai/shared/.env` 파일을 참조하고 있었음.
+
+### 18.3. 해결 방안 (Solution)
+
+1. **인프라 현황 파악**:
+    ```bash
+    sudo docker ps | grep rabbitmq  # → dev-rabbitmq healthy 확인
+    sudo netstat -tulpn | grep 5672  # → docker-proxy 확인
+    ```
+2. **실제 `.env` 파일 위치 특정 및 수정**: `/home/ubuntu/mine/ai/shared/.env`의 `RABBITMQ_URL`에서 `localhost`를 Docker 게이트웨이 IP(`172.17.0.1`) 또는 컨테이너 이름(`dev-rabbitmq`)으로 변경.
+3. **서비스 시작 순서 보장**: RabbitMQ 컨테이너가 `healthy` 상태가 된 후 AI 서버를 재시작.
+
+### 18.4. 교훈 (Lessons Learned)
+> Docker 환경에서 `localhost`는 "자기 자신의 컨테이너 내부"를 가리킨다. 호스트 OS에서 직접 실행되는 프로세스와 Docker 컨테이너 간 통신 시에는 반드시 Docker 네트워크 이름이나 호스트 게이트웨이 IP를 사용해야 한다.
+
+
+## 19. Pydantic 스키마 불일치로 인한 STT 메시지 전량 Reject
+
+### 19.1. 문제 상황 (Problem)
+- **증상**: RabbitMQ 연결이 정상화된 후, 메인 서버(Spring Boot)가 `pvp.stt.request` 큐로 보낸 메시지가 AI 서버의 Pydantic 검증 단계에서 전량 Reject 처리됨. 3회 재시도 후 DLQ로 이동.
+    ```
+    ERROR: 3 validation errors for STTRequest
+    match_id
+      Field required [input_value={'room_id': 27, 'user_id': 1, ...}]
+    user_id
+      Input should be a valid string [input_value=1, input_type=int]
+    file_url
+      Field required [input_value={'room_id': 27, 'user_id': 1, ...}]
+    ```
+
+### 19.2. 원인 분석 (Root Cause)
+AI 서버의 Pydantic 스키마(`pvp_schema.py`)와 메인 서버(Spring Boot)의 DTO 정의가 서로 다른 버전의 규격서를 참조하고 있었음. 양측 간 최종 스키마 동기화(Sync-up) 과정이 누락되어, 운영 환경에서 처음으로 통신할 때 불일치가 발견됨.
+
+| 필드 | AI 서버 (기존 코드) | 메인 서버 (실제 전송) | 불일치 |
+|------|---------------------|----------------------|--------|
+| 매치/방 ID | `match_id: str` | `room_id: int` | ❌ 키 이름 + 타입 |
+| 사용자 ID | `user_id: str` | `user_id: int` | ❌ 타입 |
+| 오디오 URL | `file_url: str` | `audio_url: str` | ❌ 키 이름 |
+| 모범 답안 | `modelAnswer: str` | `model_answer: str` | ❌ camelCase vs snake_case |
+
+### 19.3. 해결 방안 (Solution)
+메인 서버의 실제 전송 형식을 기준으로 AI 서버 코드를 전면 리팩토링 (9개 파일 수정).
+
+| # | 파일 | 변경 내용 |
+|---|------|----------|
+| 1 | `app/schemas/pvp_schema.py` | Pydantic 모델 전면 수정 (필드명, 타입, 구조) |
+| 2 | `app/workers/stt_worker.py` | `room_id`, `audio_url` 참조 변경 |
+| 3 | `app/workers/feedback_worker.py` | `room_id`, `feedbacks` 배열 구조 반영 |
+| 4 | `app/services/rabbitmq_service.py` | FAIL 응답 `room_id` 반영, `feedbacks:null` 추가 |
+| 5 | `app/services/pvp_feedback_service.py` | 반환 구조 배열화, 필드명 전면 교체 |
+| 6-9 | `tests/services/test_*.py` (4개) | 테스트 데이터 & assertion 수정 |
+
+**주요 스키마 변경 사항**:
+- `match_id` (str) → **`room_id` (int)**
+- `user_id` (str) → **`user_id` (int)**
+- `file_url` (str) → **`audio_url` (str)**
+- `modelAnswer` → **`model_answer`** (snake_case 통일)
+- Feedback Response: `feedback` (객체 `{user_A, user_B}`) → **`feedbacks` (배열 `[{...}, {...}]`)**
+- `summarize` → **`summary`**, `keyword` → **`keywords`**, `personalized` → **`personalized_feedback`**
+
+### 19.4. 검증 결과 (Verification)
+```
+======================= 40 passed, 6 warnings in 10.63s ========================
+```
+전체 40개 테스트(단위 + 통합) 100% 통과 확인.
+
+### 19.5. 교훈 (Lessons Learned)
+> 마이크로서비스 간 비동기 메시징에서 **"스키마 불일치"는 런타임에서야 발견되는 가장 흔하고 치명적인 버그**이다. `pvp_mq_schema.md`를 단일 진실 공급원(SSOT)으로 확정하고, 스키마 변경 시 반드시 양측(BE/AI) 리뷰를 거쳐 머지하는 프로세스를 도입해야 한다.

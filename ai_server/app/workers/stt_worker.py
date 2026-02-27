@@ -43,7 +43,7 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
     # 1. Validate payload with Pydantic
     request = STTRequest(**body)
     logger.info(
-        f"[STT Worker] Processing match={request.match_id}, user={request.user_id}"
+        f"[STT Worker] Processing room={request.room_id}, user={request.user_id}"
     )
 
     # 2. Call RunPod STT
@@ -51,12 +51,12 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
     # so we delegate it to the thread pool to avoid blocking the event loop
     stt_result = await asyncio.to_thread(
         runpod_client.transcribe_sync,
-        audio_url=request.file_url,
+        audio_url=request.audio_url,
     )
 
     # 3. Build and publish SUCCESS response
     response = STTResponse(
-        match_id=request.match_id,
+        room_id=request.room_id,
         user_id=request.user_id,
         status="SUCCESS",
         stt_text=stt_result.get("text", ""),
@@ -65,7 +65,7 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
     await rabbitmq_service.publish(settings.STT_RESULT_QUEUE, response.model_dump())
 
     logger.info(
-        f"[STT Worker] Completed match={request.match_id}, user={request.user_id}"
+        f"[STT Worker] Completed room={request.room_id}, user={request.user_id}"
     )
 
     # NOTE: If any exception occurs above, it will propagate to
