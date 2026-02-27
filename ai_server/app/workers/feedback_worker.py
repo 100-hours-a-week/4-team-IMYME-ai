@@ -26,7 +26,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from app.core.config import settings
 from app.services.rabbitmq_service import rabbitmq_service
 from app.services.pvp_feedback_service import pvp_feedback_service
-from app.schemas.pvp_schema import FeedbackRequest, FeedbackResponse, PvpFeedbackResult
+from app.schemas.pvp_schema import FeedbackRequest, FeedbackResponse, PvpUserFeedback
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def handle_feedback_message(body: dict, message: AbstractIncomingMessage) 
     # 1. Validate payload with Pydantic
     request = FeedbackRequest(**body)
     logger.info(
-        f"[Feedback Worker] Processing match={request.match_id}, "
+        f"[Feedback Worker] Processing room={request.room_id}, "
         f"users={[u.user_id for u in request.users]}"
     )
 
@@ -61,17 +61,18 @@ async def handle_feedback_message(body: dict, message: AbstractIncomingMessage) 
     )
 
     # 3. Build and publish SUCCESS response
+    #    feedback_result is now a list of dicts (one per user)
     response = FeedbackResponse(
-        match_id=request.match_id,
+        room_id=request.room_id,
         status="SUCCESS",
-        feedback=PvpFeedbackResult(**feedback_result),
+        feedbacks=[PvpUserFeedback(**fb) for fb in feedback_result],
     )
 
     await rabbitmq_service.publish(
         settings.FEEDBACK_RESULT_QUEUE, response.model_dump()
     )
 
-    logger.info(f"[Feedback Worker] Completed match={request.match_id}")
+    logger.info(f"[Feedback Worker] Completed room={request.room_id}")
 
     # NOTE: If any exception occurs above, it will propagate to
     # rabbitmq_service.py's on_message handler, which will:

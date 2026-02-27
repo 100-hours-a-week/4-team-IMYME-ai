@@ -59,15 +59,15 @@ class PvpFeedbackService:
         """
         2명의 사용자 텍스트를 비교 분석하여 PvP 피드백을 생성합니다.
 
-        출력 JSON 구조는 Solo 모드와 동일합니다:
-        {summarize, keyword, facts, understanding, personalized} (유저별)
+        출력 JSON 구조는 배열 형태입니다:
+        [{summary, keywords, facts, understanding, personalized_feedback}, ...] (유저별)
 
         Args:
-            criteria: 채점 기준 (keyword, modelAnswer)
+            criteria: 채점 기준 (keyword, model_answer)
             users: 2명의 사용자 데이터 리스트 [{user_id, user_text}, ...]
 
         Returns:
-            PvP 비교 피드백 결과 딕셔너리 (user_A, user_B 키 포함)
+            PvP 비교 피드백 결과 리스트 (유저별 딕셔너리 배열)
         """
         user_a = users[0]
         user_b = users[1]
@@ -85,26 +85,26 @@ class PvpFeedbackService:
                 f"Returning mutual forfeit (draw) response."
             )
             draw_msg = "두 분 모두 답변 내용이 부족하여 승부를 가릴 수 없습니다."
-            return {
-                "user_A": {
+            return [
+                {
                     "user_id": user_a["user_id"],
                     "score": 0,
-                    "summarize": draw_msg,
-                    "keyword": ["포함된 키워드: 없음", "누락된 키워드: 전체"],
+                    "summary": draw_msg,
+                    "keywords": ["포함된 키워드: 없음", "누락된 키워드: 전체"],
                     "facts": draw_msg,
                     "understanding": draw_msg,
-                    "personalized": draw_msg,
+                    "personalized_feedback": draw_msg,
                 },
-                "user_B": {
+                {
                     "user_id": user_b["user_id"],
                     "score": 0,
-                    "summarize": draw_msg,
-                    "keyword": ["포함된 키워드: 없음", "누락된 키워드: 전체"],
+                    "summary": draw_msg,
+                    "keywords": ["포함된 키워드: 없음", "누락된 키워드: 전체"],
                     "facts": draw_msg,
                     "understanding": draw_msg,
-                    "personalized": draw_msg,
+                    "personalized_feedback": draw_msg,
                 },
-            }
+            ]
 
         # ===== Case B: 한쪽만 기권 (부전승) =====
         if a_short:
@@ -148,6 +148,19 @@ class PvpFeedbackService:
 
         # CoT reasoning 필드는 내부 추론용이므로 최종 응답에서 제거
         result.pop("reasoning", None)
+
+        # Gemini 응답이 {user_A, user_B} 객체 형태로 올 경우 배열로 변환
+        if isinstance(result, dict):
+            feedbacks = []
+            for key in ["user_A", "user_B"]:
+                if key in result:
+                    feedbacks.append(result[key])
+            if feedbacks:
+                return feedbacks
+
+        # 이미 배열 형태라면 그대로 반환
+        if isinstance(result, list):
+            return result
 
         return result
 
