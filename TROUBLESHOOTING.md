@@ -472,42 +472,41 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 - **최종 보정**: 추출된 Logprobs를 Softmax 정규화 및 양방향[A-B, B-A] 평균 교정(Bradley-Terry Model)에 사용하여, $\approx 99.7\%$의 매우 안정적이고 신뢰도 높은 확신 점수(Confidence Score)를 확보.
 
 
-## 18. RabbitMQ 큐 미생성 및 연결 실패 (Docker 네트워크 이슈)
+## 18. RabbitMQ 통신 포트 인지 오류(Dev vs Release) 및 시작 순서 불일치
 
 ### 18.1. 문제 상황 (Problem)
-- **증상 1**: AI 서버 배포(CD) 후 RabbitMQ Management UI(`15671`)에 큐가 0개로 표시됨.
-- **증상 2**: AI 서버 로그에서 `CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'` 에러 발생 후, `[Errno 111] Connect call failed ('127.0.0.1', 5672)` 에러가 5초 간격으로 무한 반복.
-    ```
-    ERROR:aiormq.connection:Unexpected connection close from remote
-      "amqp://admin:******@localhost:5672/",
-      Connection.Close(reply_code=320,
-      reply_text="CONNECTION_FORCED - broker forced connection closure
-                   with reason 'shutdown'")
-
-    ERROR:aiormq.connection:error when creating transport:
-      <AMQPConnectionError: (111, "Connect call failed ('127.0.0.1', 5672)")>
-    ```
-- **증상 3**: RabbitMQ Management UI 접속 시 `15672`는 흰 화면(접속 불가), `15671`에서만 접속 가능하나 큐가 비어있음.
+- **증상 1 (15671 포트 큐 0개)**: 로컬 PC 브라우저에서 `15671` 포트로 관리 UI에 접속했으나, 생성되어 있어야 할 큐가 하나도 없는 빈 상태(0개)로 조회됨. 이때 이를 **Dev 서버의 MQ**라고 착각함.
+- **증상 2 (15672 포트 접속 불가)**: 실제 Dev 서버의 MQ인 `15672` 포트로 외부망에서 다이렉트 접속을 시도하면 연결이 원천 차단되어 흰 화면(접속 불가)이 뜸.
+- **증상 3 (CONNECTION_FORCED 에러 루프)**: 동시에 AI 서버 측 로그에서는 `CONNECTION_FORCED` 에러로 기존 연결이 끊어진 직후, `[Errno 111] Connect call failed ('127.0.0.1', 5672)` 에러가 발생하며 수 초 간격으로 엠큐 연결 재시도를 무한 반복함.
 
 ### 18.2. 원인 분석 (Root Cause)
+이 현상들은 **"클라우드 인프라 망 분리(VPC) 특성에 대한 혼동"**과 **"프로세스 기동 타이밍 불일치"**가 복합적으로 얽힌 결과입니다.
 
-1. **Docker 네트워크 격리**: RabbitMQ 컨테이너의 포트가 `127.0.0.1:5672->5672/tcp`로 바인딩되어 있어 호스트 루프백에서만 접속 가능. AI 서버가 도커 컨테이너 내부에서 `localhost`를 호출하면 자기 자신(AI 컨테이너)을 가리키게 됨.
-2. **컨테이너 재시작 타이밍**: RabbitMQ 도커 컨테이너를 재시작하면서 기존 연결이 `CONNECTION_FORCED`로 강제 종료되었고, 재시작 완료 전에 AI 서버가 재접속을 시도하여 `Connection Refused` 발생.
-3. **레거시 프로세스 잔존**: AI 서버가 Docker 배포본이 아닌 우분투 OS에 직접 설치된 구버전 프로세스(PM2)로 실행되고 있었으며, `/home/ubuntu/mine/ai/shared/.env` 파일을 참조하고 있었음.
+1. **증상 1(15671 큐 0개) 원인 (Optical Illusion)**: 
+   - 사용자가 AWS SSM 포트 포워딩(`15671:15671`)을 타고 접속한 타겟(`b-afe39155...mq.ap-northeast-2.on.aws`)은 Dev 서버가 아니라 **운영망(Release) 전용으로 띄워진 Amazon MQ**였습니다.
+   - 현재 테스트 중인 AI 파이썬 프로세스('.env')는 Release Amazon MQ가 아니라, 자기 컴퓨터 내부에 떠있는 **Dev 도커 엠큐(`localhost:5672`)**를 바라보며 큐를 생성하고 있었습니다. 즉, '가' 서버(Dev)에 큐를 만들어두고 '나' 서버(Release 15671) 창을 열어보며 큐가 없다고 착각하는 해프닝이었습니다.
+2. **증상 2(15672 접속 불가) 원인 (Network Isolation)**:
+   - 우분투 서버 호스트에 띄워진 Dev RabbitMQ 도커 컨테이너는 보안을 위해 포트 바인딩이 `127.0.0.1:15672->15672/tcp`로 설정되어 있었습니다. 
+   - 이 설정은 **오직 서버의 호스트 내부(`localhost`)에서만 접근을 허용**하므로, 외부 인터넷 망(개발자의 Mac/PC 브라우저)에서 해당 서버의 공인/사설 IP + 15672 포트로 직접 찔러 들어가는 트래픽은 도커 네트워크/방화벽에 의해 정상적으로 차단된 것입니다.
+3. **증상 3(재연결 무한 루프 에러) 원인 (Startup Order Mismatch)**:
+   - 우분투 OS(호스트)에 네이티브로 직접 실행되는 AI 파이썬 프로세스와, 도커(Docker)로 실행되는 RabbitMQ 컨테이너 간의 **"재시작 순서(Timing) 불일치"**가 핵심 원인입니다.
+   - RabbitMQ 도커가 어떤 이유(재배포 등)로 컨테이너를 재시작하면서 기존 세션을 강제로 날려버려 `CONNECTION_FORCED` 에러가 났습니다.
+   - 직후 AI 서버의 `aio_pika` 라이브러리는 강제로 끊어진 세션을 복구하기 위해 `localhost:5672`를 미친 듯이 찌르며 재연결을 시도했지만, 도커 안의 엠큐가 부팅을 마치고 완전히 준비 상태(`healthy`)가 되기도 전에 시도했으므로 `Connect call failed` (연결 거부)가 난 것입니다.
 
 ### 18.3. 해결 방안 (Solution)
 
-1. **인프라 현황 파악**:
-    ```bash
-    sudo docker ps | grep rabbitmq  # → dev-rabbitmq healthy 확인
-    sudo netstat -tulpn | grep 5672  # → docker-proxy 확인
-    ```
-2. **실제 `.env` 파일 위치 특정 및 수정**: `/home/ubuntu/mine/ai/shared/.env`의 `RABBITMQ_URL`에서 `localhost`를 Docker 게이트웨이 IP(`172.17.0.1`) 또는 컨테이너 이름(`dev-rabbitmq`)으로 변경.
-3. **서비스 시작 순서 보장**: RabbitMQ 컨테이너가 `healthy` 상태가 된 후 AI 서버를 재시작.
-
-### 18.4. 교훈 (Lessons Learned)
-> Docker 환경에서 `localhost`는 "자기 자신의 컨테이너 내부"를 가리킨다. 호스트 OS에서 직접 실행되는 프로세스와 Docker 컨테이너 간 통신 시에는 반드시 Docker 네트워크 이름이나 호스트 게이트웨이 IP를 사용해야 한다.
-
+1. **Dev/Release 엔드포인트 혼동 인지 (15671 관측 오류 해결)**: 
+   - `15671` SSM 터널링은 **Release 환경 모니터링 전용**임을 팀 내 개발자들에게 명확히 인지시킴.
+   - Dev 서버 통신 테스트를 할 때는 반드시 아래 2번 방법을 사용해 도커 내부 엠큐(`15672`)를 모니터링해야 함.
+2. **안전한 Dev 관리 UI 접속 (SSH 터널링)**: 
+   - 도커 컨테이너의 보안 호스트 바인딩(`127.0.0.1:15672`)을 해제해 퍼블릭으로 뚫는 것은 위험합니다. 바인딩을 그대로 유지하되, 개발자의 로컬 PC에서 **SSH 터널링(Port Forwarding)**을 사용하여 캡슐화된 암호 파이프를 뚫어 호스트 내부망으로 우회 접속합니다.
+   ```bash
+   # 로컬 PC 터미널에서 실행 (pem 키가 필요한 경우 -i 옵션 추가)
+   ssh -L 15672:localhost:15672 사용자계정@서버IP주소
+   ```
+   이후 로컬 PC 브라우저에서 `http://localhost:15672` 로 접속하면, 방화벽을 뚫고 도커 내부의 진짜 Dev 큐 구조가 담긴 찐 UI 화면을 안전하게 열람할 수 있습니다.
+3. **서비스 시작 순서 논리적 보장 (Shutdown Error 방지)**: 
+   - **타이밍 제어**: AI 서버 파이썬 프로세스는 항상 **RabbitMQ 도커 컨테이너 상태가 완전히 `healthy`**이거나 최소한 5672 포트가 리스닝(Listening) 상태가 되었을 때 후행적으로 재시작 하도록 **"스타트업 순서(Startup Sequence) 보증 스크립트"**를 도입하여 연결 무한 실패를 방지했습니다.
 
 ## 19. Pydantic 스키마 불일치로 인한 STT 메시지 전량 Reject
 
@@ -553,11 +552,27 @@ AI 서버의 Pydantic 스키마(`pvp_schema.py`)와 메인 서버(Spring Boot)�
 - Feedback Response: `feedback` (객체 `{user_A, user_B}`) → **`feedbacks` (배열 `[{...}, {...}]`)**
 - `summarize` → **`summary`**, `keyword` → **`keywords`**, `personalized` → **`personalized_feedback`**
 
-### 19.4. 검증 결과 (Verification)
-```
-======================= 40 passed, 6 warnings in 10.63s ========================
-```
-전체 40개 테스트(단위 + 통합) 100% 통과 확인.
 
-### 19.5. 교훈 (Lessons Learned)
-> 마이크로서비스 간 비동기 메시징에서 **"스키마 불일치"는 런타임에서야 발견되는 가장 흔하고 치명적인 버그**이다. `pvp_mq_schema.md`를 단일 진실 공급원(SSOT)으로 확정하고, 스키마 변경 시 반드시 양측(BE/AI) 리뷰를 거쳐 머지하는 프로세스를 도입해야 한다.
+
+## 20. RabbitMQ 큐 생성 주체 충돌 및 누락 이슈 (PRECONDITION_FAILED / NotAvailable)
+
+### 20.1. 문제 상황 (Problem)
+- **증상 1 (과거 - PRECONDITION_FAILED)**: AI 서버와 메인 서버가 각각 큐 생성을 시도하다가, 큐 속성(Durable 등) 불일치로 인해 보안 위반(`406 PRECONDITION_FAILED`) 에러가 발생하며 서버가 다운됨.
+- **증상 2 (현재 - QueuesNotAvailableException)**: 충돌을 피해 "AI 서버만 큐를 생성"하도록 규칙을 변경했으나, 이번에는 AI 서버가 켜지기 전 메인 서버가 먼저 배포(CD)되어 기동될 때 자신이 구독해야 할 `pvp.stt.response` 큐가 없는 것을 보고 예외를 던지며 메인 서버의 Health Check가 실패(다운)함.
+
+### 20.2. 원인 분석 (Root Cause)
+- **큐 생성의 멱등성 한계**: RabbitMQ에서 큐 생성(`declare`)은 이미 존재하더라도 옵션이 100% 동일하면 무시되지만, 양측 라이브러리(Java Spring vs Python aio_pika)의 디폴트 설정 차이 유무가 충돌을 일으켰음.
+- **메시징 아키텍처 원칙 위배**: AI 서버는 자기가 수신(Consume)할 5개의 큐만 생성하고 발행(Publish)할 큐는 생성하지 않음. 반면 메인 서버는 자기가 수신(Consume)해야 할 큐의 생성을 AI에게 떠넘김. 결과적으로 메인 서버 수신용 큐 2개는 아무도 생성하지 않는 사각지대에 놓임. Consumer는 대상 큐가 물리적으로 존재해야만 Bind/Listen을 시작할 수 있으므로 치명적 구조 결함 발생.
+
+### 20.3. 해결 방안 (Solution)
+**"자기가 구독(Consume)해서 읽어갈 큐는 자기가 뜰 때 스스로 만든다"** 원칙 도입.
+메인 서버(`4-team-IMYME-be`)의 RabbitMQ 설정 클래스에 다음 2개의 큐와 바인딩을 명시적으로 선언(Declare)하도록 코드 수정 지시.
+
+1. **`pvp.stt.response` 큐 생성 및 바인딩**
+2. **`pvp.feedback.response` 큐 생성 및 바인딩**
+
+### 20.4. 핵심 주의사항 (PRECONDITION_FAILED 재발 방지)
+과거의 충돌 악몽을 피하기 위해, 메인 서버가 응답 큐를 선언할 때 AI 서버(생산자)가 기대하는 스펙과 **단 하나의 속성도 어긋나면 안 됨.**
+- **Durable (영속성)**: 반드시 `true` 유지 (`QueueBuilder.durable(...)` 등 사용).
+- **Auto-delete, Exclusive**: 모두 기본값(`false`).
+- **Dead Letter Exchange (DLX)**: 응답 큐(`*.response`)에는 별도의 DLQ 라우팅 등 임의의 Arguments 추가 절대 금지.
