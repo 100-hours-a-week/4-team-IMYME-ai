@@ -207,26 +207,26 @@ Do NOT wrap the output in markdown code blocks. Output raw JSON only.
   "user_A": {{
     "user_id": "{user_a_id}",
     "score": 0,
-    "summarize": "이 사용자의 이해도와 핵심 포인트를 요약한 한 문장.",
-    "keyword": [
+    "summary": "이 사용자의 이해도와 핵심 포인트를 요약한 한 문장.",
+    "keywords": [
       "포함된 키워드: A, B",
       "누락된 키워드: C"
     ],
     "facts": "사실 관계가 정확하면 '사실 관계 정확함', 아니면 오류 지적.",
     "understanding": "이해 깊이 평가 (단순 암기 vs 내재화).",
-    "personalized": "PvP 전략 기반 비교 피드백. 상대방과의 비교를 반영한 코칭."
+    "personalized_feedback": "PvP 전략 기반 비교 피드백. 상대방과의 비교를 반영한 코칭."
   }},
   "user_B": {{
     "user_id": "{user_b_id}",
     "score": 0,
-    "summarize": "이 사용자의 이해도와 핵심 포인트를 요약한 한 문장.",
-    "keyword": [
+    "summary": "이 사용자의 이해도와 핵심 포인트를 요약한 한 문장.",
+    "keywords": [
       "포함된 키워드: A, B",
       "누락된 키워드: C"
     ],
     "facts": "사실 관계가 정확하면 '사실 관계 정확함', 아니면 오류 지적.",
     "understanding": "이해 깊이 평가 (단순 암기 vs 내재화).",
-    "personalized": "PvP 전략 기반 비교 피드백. 상대방과의 비교를 반영한 코칭."
+    "personalized_feedback": "PvP 전략 기반 비교 피드백. 상대방과의 비교를 반영한 코칭."
   }}
 }}
 """
