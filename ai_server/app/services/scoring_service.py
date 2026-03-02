@@ -13,7 +13,6 @@ class ScoringService:
 
     def __init__(self):
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
             self.model = genai.GenerativeModel("gemini-3-flash-preview")
         else:
             logger.warning("GEMINI_API_KEY is not set. ScoringService will fail.")

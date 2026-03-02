@@ -46,11 +46,8 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
         f"[STT Worker] Processing room={request.room_id}, user={request.user_id}"
     )
 
-    # 2. Call RunPod STT
-    # transcribe_sync is a blocking function (requests + time.sleep),
-    # so we delegate it to the thread pool to avoid blocking the event loop
-    stt_result = await asyncio.to_thread(
-        runpod_client.transcribe_sync,
+    # 2. Call RunPod STT (now natively async, no thread pool needed)
+    stt_result = await runpod_client.transcribe(
         audio_url=request.audio_url,
     )
 
