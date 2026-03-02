@@ -18,7 +18,12 @@ class Settings(BaseSettings):
     RUNPOD_API_KEY: str = ""
     RUNPOD_ENDPOINT_ID: str = ""
 
-    # Timeout for polling
+    # Pod (Primary) — Direct HTTP to FastAPI on RunPod Pod
+    # Pod가 설정되어 있으면 우선 호출, 실패 시 Serverless Fallback
+    RUNPOD_POD_URL: str = ""  # e.g. https://{POD_ID}-8000.proxy.runpod.net
+    RUNPOD_POD_TIMEOUT: int = 30  # Pod 응답 대기 시간 (초)
+
+    # Timeout for Serverless polling (Fallback)
     RUNPOD_TIMEOUT_SECONDS: int = 600
 
     # Gemini Configuration

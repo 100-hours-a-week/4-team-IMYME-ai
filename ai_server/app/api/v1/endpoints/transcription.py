@@ -69,9 +69,9 @@ async def transcribe_audio(request: TranscriptionRequest):
         )
 
     try:
-        # Call the RunPod client
-        # RunPod 클라이언트 호출
-        result = runpod_client.transcribe_sync(
+        # Call the RunPod client (natively async)
+        # RunPod 클라이언트 호출 (비동기)
+        result = await runpod_client.transcribe(
             audio_url=str(request.audio_url),
             language="ko",  # Force Korean for backend
         )

@@ -1,17 +1,23 @@
 import time
+import logging
+
+# ── Configure Gemini API ONCE before any service imports ──
+from app.core.config import settings
+import google.generativeai as genai
+
+if settings.GEMINI_API_KEY:
+    genai.configure(api_key=settings.GEMINI_API_KEY)
 
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from contextlib import asynccontextmanager
 from app.api.v1.router import api_router
-from app.core.config import settings
 from app.core.exception_handlers import add_exception_handlers
 from app.core.errors import ErrorCode
 from app.schemas.common import create_error_response
 import asyncio
 from app.core import metrics
-import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

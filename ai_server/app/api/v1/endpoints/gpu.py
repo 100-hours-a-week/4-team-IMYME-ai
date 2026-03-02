@@ -15,7 +15,7 @@ async def trigger_warmup():
     Trigger GPU warmup asynchronously (SYS-001).
     Returns immediately with success status.
     """
-    result = runpod_client.warmup_async()
+    result = await runpod_client.warmup_async()
 
     if result["status"] == "failed":
         return JSONResponse(

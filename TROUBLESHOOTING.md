@@ -480,18 +480,18 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 - **증상 3 (CONNECTION_FORCED 에러 루프)**: 동시에 AI 서버 측 로그에서는 `CONNECTION_FORCED` 에러로 기존 연결이 끊어진 직후, `[Errno 111] Connect call failed ('127.0.0.1', 5672)` 에러가 발생하며 수 초 간격으로 엠큐 연결 재시도를 무한 반복함.
 
 ### 18.2. 원인 분석 (Root Cause)
-이 현상들은 **"클라우드 인프라 망 분리(VPC) 특성에 대한 혼동"**과 **"프로세스 기동 타이밍 불일치"**가 복합적으로 얽힌 결과입니다.
+이 현상들은 **"클라우드 인프라 망 분리(VPC) 특성에 대한 혼동"**과 **"프로세스 기동 타이밍 불일치"**가 복합적으로 얽힌 결과임.
 
 1. **증상 1(15671 큐 0개) 원인 (Optical Illusion)**: 
-   - 사용자가 AWS SSM 포트 포워딩(`15671:15671`)을 타고 접속한 타겟(`b-afe39155...mq.ap-northeast-2.on.aws`)은 Dev 서버가 아니라 **운영망(Release) 전용으로 띄워진 Amazon MQ**였습니다.
-   - 현재 테스트 중인 AI 파이썬 프로세스('.env')는 Release Amazon MQ가 아니라, 자기 컴퓨터 내부에 떠있는 **Dev 도커 엠큐(`localhost:5672`)**를 바라보며 큐를 생성하고 있었습니다. 즉, '가' 서버(Dev)에 큐를 만들어두고 '나' 서버(Release 15671) 창을 열어보며 큐가 없다고 착각하는 해프닝이었습니다.
+   - 사용자가 AWS SSM 포트 포워딩(`15671:15671`)을 타고 접속한 타겟(`b-afe39155...mq.ap-northeast-2.on.aws`)은 Dev 서버가 아니라 **운영망(Release) 전용으로 띄워진 Amazon MQ**였음.
+   - 현재 테스트 중인 AI 파이썬 프로세스('.env')는 Release Amazon MQ가 아니라, 자기 컴퓨터 내부에 떠있는 **Dev 도커 엠큐(`localhost:5672`)**를 바라보며 큐를 생성하고 있었음. 즉, '가' 서버(Dev)에 큐를 만들어두고 '나' 서버(Release 15671) 창을 열어보며 큐가 없다고 착각하는 해프닝이었음.
 2. **증상 2(15672 접속 불가) 원인 (Network Isolation)**:
-   - 우분투 서버 호스트에 띄워진 Dev RabbitMQ 도커 컨테이너는 보안을 위해 포트 바인딩이 `127.0.0.1:15672->15672/tcp`로 설정되어 있었습니다. 
-   - 이 설정은 **오직 서버의 호스트 내부(`localhost`)에서만 접근을 허용**하므로, 외부 인터넷 망(개발자의 Mac/PC 브라우저)에서 해당 서버의 공인/사설 IP + 15672 포트로 직접 찔러 들어가는 트래픽은 도커 네트워크/방화벽에 의해 정상적으로 차단된 것입니다.
+   - 우분투 서버 호스트에 띄워진 Dev RabbitMQ 도커 컨테이너는 보안을 위해 포트 바인딩이 `127.0.0.1:15672->15672/tcp`로 설정되어 있었음. 
+   - 이 설정은 **오직 서버의 호스트 내부(`localhost`)에서만 접근을 허용**하므로, 외부 인터넷 망(개발자의 Mac/PC 브라우저)에서 해당 서버의 공인/사설 IP + 15672 포트로 직접 찔러 들어가는 트래픽은 도커 네트워크/방화벽에 의해 정상적으로 차단된 것임.
 3. **증상 3(재연결 무한 루프 에러) 원인 (Startup Order Mismatch)**:
-   - 우분투 OS(호스트)에 네이티브로 직접 실행되는 AI 파이썬 프로세스와, 도커(Docker)로 실행되는 RabbitMQ 컨테이너 간의 **"재시작 순서(Timing) 불일치"**가 핵심 원인입니다.
-   - RabbitMQ 도커가 어떤 이유(재배포 등)로 컨테이너를 재시작하면서 기존 세션을 강제로 날려버려 `CONNECTION_FORCED` 에러가 났습니다.
-   - 직후 AI 서버의 `aio_pika` 라이브러리는 강제로 끊어진 세션을 복구하기 위해 `localhost:5672`를 미친 듯이 찌르며 재연결을 시도했지만, 도커 안의 엠큐가 부팅을 마치고 완전히 준비 상태(`healthy`)가 되기도 전에 시도했으므로 `Connect call failed` (연결 거부)가 난 것입니다.
+   - 우분투 OS(호스트)에 네이티브로 직접 실행되는 AI 파이썬 프로세스와, 도커(Docker)로 실행되는 RabbitMQ 컨테이너 간의 **"재시작 순서(Timing) 불일치"**가 핵심 원인임.
+   - RabbitMQ 도커가 어떤 이유(재배포 등)로 컨테이너를 재시작하면서 기존 세션을 강제로 날려버려 `CONNECTION_FORCED` 에러가 발생함.
+   - 직후 AI 서버의 `aio_pika` 라이브러리는 강제로 끊어진 세션을 복구하기 위해 `localhost:5672`를 미친 듯이 찌르며 재연결을 시도했지만, 도커 안의 엠큐가 부팅을 마치고 완전히 준비 상태(`healthy`)가 되기도 전에 시도했으므로 `Connect call failed` (연결 거부)가 발생함.
 
 ### 18.3. 해결 방안 (Solution)
 
@@ -499,14 +499,14 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
    - `15671` SSM 터널링은 **Release 환경 모니터링 전용**임을 팀 내 개발자들에게 명확히 인지시킴.
    - Dev 서버 통신 테스트를 할 때는 반드시 아래 2번 방법을 사용해 도커 내부 엠큐(`15672`)를 모니터링해야 함.
 2. **안전한 Dev 관리 UI 접속 (SSH 터널링)**: 
-   - 도커 컨테이너의 보안 호스트 바인딩(`127.0.0.1:15672`)을 해제해 퍼블릭으로 뚫는 것은 위험합니다. 바인딩을 그대로 유지하되, 개발자의 로컬 PC에서 **SSH 터널링(Port Forwarding)**을 사용하여 캡슐화된 암호 파이프를 뚫어 호스트 내부망으로 우회 접속합니다.
+   - 도커 컨테이너의 보안 호스트 바인딩(`127.0.0.1:15672`)을 해제해 퍼블릭으로 뚫는 것은 위험함. 바인딩을 그대로 유지하되, 개발자의 로컬 PC에서 **SSH 터널링(Port Forwarding)**을 사용하여 캡슐화된 암호 파이프를 뚫어 호스트 내부망으로 우회 접속해야 함.
    ```bash
    # 로컬 PC 터미널에서 실행 (pem 키가 필요한 경우 -i 옵션 추가)
    ssh -L 15672:localhost:15672 사용자계정@서버IP주소
    ```
-   이후 로컬 PC 브라우저에서 `http://localhost:15672` 로 접속하면, 방화벽을 뚫고 도커 내부의 진짜 Dev 큐 구조가 담긴 찐 UI 화면을 안전하게 열람할 수 있습니다.
+   이후 로컬 PC 브라우저에서 `http://localhost:15672` 로 접속하면, 방화벽을 뚫고 도커 내부의 진짜 Dev 큐 구조가 담긴 찐 UI 화면을 안전하게 열람할 수 있음.
 3. **서비스 시작 순서 논리적 보장 (Shutdown Error 방지)**: 
-   - **타이밍 제어**: AI 서버 파이썬 프로세스는 항상 **RabbitMQ 도커 컨테이너 상태가 완전히 `healthy`**이거나 최소한 5672 포트가 리스닝(Listening) 상태가 되었을 때 후행적으로 재시작 하도록 **"스타트업 순서(Startup Sequence) 보증 스크립트"**를 도입하여 연결 무한 실패를 방지했습니다.
+   - **타이밍 제어**: AI 서버 파이썬 프로세스는 항상 **RabbitMQ 도커 컨테이너 상태가 완전히 `healthy`**이거나 최소한 5672 포트가 리스닝(Listening) 상태가 되었을 때 후행적으로 재시작 하도록 **"스타트업 순서(Startup Sequence) 보증 스크립트"**를 도입하여 연결 무한 실패를 방지함.
 
 ## 19. Pydantic 스키마 불일치로 인한 STT 메시지 전량 Reject [2026-02-27]
 
@@ -597,7 +597,7 @@ AI 서버의 Pydantic 스키마(`pvp_schema.py`)와 메인 서버(Spring Boot)�
 ### 21.3. 해결 방안 (Solution)
 
 #### 1단계: 비밀번호 URL 인코딩 적용
-`.env` 파일에 접속 문자열을 기재할 때, 비밀번호 내 특수문자를 반드시 URL 인코딩 방식(`%XX`)으로 치환해서 기재해야 합니다. (따옴표는 생략 가능)
+`.env` 파일에 접속 문자열을 기재할 때, 비밀번호 내 특수문자를 반드시 URL 인코딩 방식(`%XX`)으로 치환해서 기재해야 함. (따옴표는 생략 가능)
 자주 사용되는 특수문자 변환 목록:
 - `@` ➜ `%40`
 - `:` ➜ `%3A`
@@ -630,7 +630,7 @@ docker-compose up -d --force-recreate ai-server
 - **증상 2 (어색한 지시대명사)**: 화면에 출력된 코칭 문장 속에 "User A 측에서는..." 또는 "유저 B님은..." 과 같이, 서비스 화면에 노출되어서는 안 될 내부 식별자(프롬프트 변수명)가 텍스트에 그대로 섞여서 출력됨 ("상대방"이라는 자연스러운 호칭이 아님).
 
 ### 22.2. 원인 분석 (Root Cause)
-두 증상은 각각 시스템 간 **"JSON 키 맵핑(명명 규칙) 변환 오류"**와 LLM의 **"맥락 치환 기능 결여"**가 원인이었습니다.
+두 증상은 각각 시스템 간 **"JSON 키 맵핑(명명 규칙) 변환 오류"**와 LLM의 **"맥락 치환 기능 결여"**가 원인이었음.
 
 1. **증상 1 (피드백 소실) - Snake vs Camel 변환 누락**:
    - AI 서버는 Python 표준 스네이크 케이스인 `personalized_feedback` 이라는 키 이름으로 JSON을 생성하여 메인 서버로 전달함.
@@ -652,3 +652,61 @@ docker-compose up -d --force-recreate ai-server
    2. **Naming (CRITICAL)**: NEVER output identifiers like "User A", "User B", "유저 A", or "사용자 B" in the feedback text. ALWAYS refer to the current user as "회원님" (You) and the other person as "상대방" (Opponent).
    ```
    - 이로써 LLM은 내부적으로 A와 B를 비교 계산하더라도, 사용자에게 보여줄 최종 텍스트를 인코딩할 때는 철저하게 "회원님은 ~하셨지만, 상대방은 ~했습니다." 식의 자연스러운 1:1 대화형 코칭 화법만 사용하도록 강제됨.
+
+
+## 23. 오디오 임시 파일 확장자 하드코딩 결함 (STT 디버깅 사이드이펙트 예방) [2026-03-02]
+
+### 23.1. 문제 상황 (Problem)
+- **증상**: 클라이언트가 `.wav`, `.webm`, `.m4a` 등 다양한 확장자를 지닌 오디오 파일 URL을 STT 서버로 전송했을 때 기능 자체는 정상 동작하나, 컨테이너 내부에 임시 다운로드되는 파일의 이름표가 무조건 `*.mp3`로 강제 고정되어 저장됨.
+- **영향**: 당장 에러를 유발하지는 않으나, 향후 오디오 메타데이터를 직접 읽어들여 2차 가공을 하거나 FFmpeg 기반 모델이 아닌 외부 VAD(Voice Activity Detection) 알고리즘과 직접 연동 시, 파일 확장자(`mp3`)와 실제 데이터 헤더 포맷이 불일치하여 원인을 찾기 힘든 파싱 에러(Corrupted File)를 유발할 수 있는 기술 부채임.
+
+### 23.2. 원인 분석 (Root Cause)
+- **ai_server (정상)**: 클라이언트와 통신하는 1차 검증용 `ai_server`의 API Endpoint (`transcription.py`) 에서는 `supported_formats` 배열을 통해 `.wav`, `.m4a`, `.webm` 등 9가지 포맷을 정상적으로 인지 및 허용하고 있었음.
+- **stt_server (결함)**: 실제 오디오 스트림을 다운로드받아 파일로 저장하는 `stt_server`의 워커 모듈(`audio_loader.py`)에서 `tempfile.NamedTemporaryFile(suffix=".mp3")`라고 옵션을 하드코딩하여 쓰고 있었음. 
+- **그동안 에러가 없었던 이유**: Whisper 모델 백엔드가 오디오를 메모리로 로드할 때 사용하는 FFMpeg 라이브러리가 겉표지 이름표(`.mp3`)를 무시하고 실제 바이너리 패킷 헤더를 확인하여 자동으로 정상 포맷으로 디코딩하는 기능이 있었기에 가능했던 우연의 일치였음.
+
+### 23.3. 해결 방안 (Solution)
+`stt_server`의 `audio_loader.py`에서 무분별한 `.mp3` 확장자 덧씌우기를 중단하고, 원본 URL에서 실제 확장자를 동적으로 파싱하여 정직하게 보존하도록 로직을 수정함.
+
+```python
+# 수정 전
+with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+
+# 수정 후: 쿼리스트링 제거 후 URL에서 순수 확장자 추출
+clean_url = url.split("?")[0]
+ext = os.path.splitext(clean_url)[1] or ".mp3"  # 확장자가 없을 때만 mp3 fallback
+
+with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+```
+
+**개선 효과**: 임시 파일의 명칭(`ext`)과 실제 데이터가 1:1로 일치하게 되어 디버깅 시 개발자 혼란이 사라지고, 다른 포맷 특화 라이브러리와의 연동 안정성을 사전 확보함.
+
+
+## 24. 외부 API(RunPod STT) 호출의 완전 비동기(Async) 전환 [2026-03-02]
+
+### 24.1. 문제 상황 (Problem)
+- **증상**: 기존 AI 서버(`ai_server`)는 `requests` 라이브러리를 사용하여 RunPod(GPU 서버)에 STT 처리를 요청하는 **동기(Blocking)** 통신을 수행함.
+- **기존의 꼼수 (Workaround)**: FastAPI의 비동기 이벤트 루프가 STT 응답 대기 시간(예: 10초) 동안 멈추는 것을 막기 위해, 호출부에 `asyncio.to_thread()`를 덧씌워 별도의 더미 스레드(Thread)로 요청을 던지는 방식을 사용 중이었음.
+- **영향**: 요청이 몰릴 때마다 임시 스레드가 생성되어 서버 메모리와 컨텍스트 스위칭 비용이 증가하는 비효율이 존재함.
+
+### 24.2. GPU 연산 특성과 비동기의 오해 (Misconception)
+- **오해**: "통신을 비동기로 바꾸면 백엔드 GPU 연산도 병렬로 빨라지는 것 아닌가?"
+- **진실 (Fact)**: GPU 상의 STT 추론 연산 시간 자체는 물리적으로 고정되어 있으며 전혀 빨라지지 않음. 이번 비동기 전환의 목적은 GPU 속도 향상이 아니라, 긴 연산 시간을 **"기다리는 AI 서버(FastAPI)의 효율성 극대화"**에 있음.
+
+### 24.3. 해결 방안 (Solution)
+`runpod_client.py`의 모든 핵심 메서드(`transcribe`, `_poll_status`, `warmup` 등)를 순수 비동기 기반인 `httpx.AsyncClient`로 전면 재작성함.
+
+```python
+# 수정 전 (동기 + 스레드 격리)
+stt_result = await asyncio.to_thread(
+    runpod_client.transcribe_sync, audio_url=request.audio_url
+)
+
+# 수정 후 (완전 비동기 - Non-Blocking)
+stt_result = await runpod_client.transcribe(audio_url=request.audio_url)
+```
+
+**개선 효과 (Impact)**:
+1. **스레드 오버헤드 제거**: 무거운 `asyncio.to_thread()` 래퍼를 제거하여 AI 서버의 리소스(메모리) 낭비를 원천 차단함.
+2. **동시성(Concurrency) 극대화**: `await` 키워드를 만나는 순간, AI 서버는 응답을 멍하니 기다리지 않고 **즉시 제어권을 반환(Yield)**함. 대기하는 10여 초 동안 같은 이벤트 루프 내에서 수십 개의 다른 API 요청(웹소켓, DB I/O 등)을 멈춤 없이 병렬로 쳐낼 수 있게 됨 (Throughput 대폭 향상).
+3. **폴링 최적화**: 2초 간격 리트라이 루프에서도 동기식 `time.sleep(2)`가 아닌 `await asyncio.sleep(2)`를 사용하여 대기 효율을 높임.
