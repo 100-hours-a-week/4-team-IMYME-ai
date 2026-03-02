@@ -4,7 +4,7 @@
 
 ---
 
-## 1. 코드 및 의존성 이슈 (Code & Dependencies)
+## 1. 코드 및 의존성 이슈 (Code & Dependencies) [2026-01-21]
 
 ### 1.1. 로컬 Python 3.13 호환성 문제
 - **문제상황**: 로컬 개발 환경(Python 3.13)에서 `pip install` 시 `pydantic-core` 빌드 실패 (`maturin failed`).
@@ -24,7 +24,7 @@
 
 ---
 
-## 2. Docker 빌드 및 배포 이슈 (Docker Build & Deploy)
+## 2. Docker 빌드 및 배포 이슈 (Docker Build & Deploy) [2026-01-21]
 
 ### 2.1. PyAV 빌드 실패 (`pkg-config` 누락)
 - **문제상황**: Docker 빌드 중 `faster-whisper`의 의존성인 `av` 패키지 설치 실패 (`subprocess-exited-with-error`).
@@ -38,14 +38,14 @@
 
 ---
 
-## 3. RAG (Knowledge System) 구현 이슈
+## 3. RAG (Knowledge System) 구현 이슈 [2026-01-28]
 
 ### 3.1. API Key 로딩 시점 문제 (Standalone Script)
 - **문제상황**: FastAPI 앱 구동 시에는 문제가 없으나, 독립 스크립트(`verify_rag_core.py`) 실행 시 `GEMINI_API_KEY`를 찾지 못함.
 - **원인**: `app/core/config.py`의 `Settings` 객체가 `load_dotenv()` 호출 전에 초기화되어, 환경변수 파일(.env)의 값을 읽어오지 못함 (Pydantic Settings 캐싱 특성).
 - **해결**: `KnowledgeService.__init__` 메서드 내에 **방어 코드** 추가. `settings.GEMINI_API_KEY`가 비어있을 경우, 명시적으로 `.env` 파일을 찾아 다시 로드(`reload`)하고 값을 주입하도록 수정.
 
-## 4. 성능 및 지연 시간 (Latency) 이슈
+## 4. 성능 및 지연 시간 (Latency) 이슈 [2026-01-28]
 
 ### 4.1. Solo Mode Feedback 지연 (Submissions)
 - **문제상황**: `/api/v1/solo/submissions` 요청 완료 및 피드백 생성까지 약 30~60초 이상 소요됨.
@@ -64,7 +64,7 @@
     - **결과**: 응답 시간이 **2~3분 -> 7~10초**로 대폭 개선됨. (비동기 배치 처리가 필수는 아니게 됨)
 
 
-## 5. 보안 강화: 내부 인증 도입 (Internal Secret)
+## 5. 보안 강화: 내부 인증 도입 (Internal Secret) [2026-01-29]
 - **배경**: AI 서버 API가 외부에 노출될 경우 무분별한 요청이나 오남용을 방지하기 위해 최소한의 인증 장치가 필요.
 - **조치**: 
     - `main.py`에 Middleware를 추가하여 모든 요청(Health Check 제외)에 대해 `x-internal-secret` 헤더를 검증하도록 변경.
@@ -72,7 +72,7 @@
 
 
 
-## 6. API Access Denied (403 Forbidden)
+## 6. API Access Denied (403 Forbidden) [2026-01-29]
 **증상**: API 호출 시 `403 Forbidden` 에러와 `{"detail": "Access Denied: Invalid Internal Secret"}` 응답 발생.
 
 **원인**: AI 서버에 내부 인증 미들웨어가 적용되어 올바른 `x-internal-secret` 헤더 없이 요청했기 때문.
@@ -96,7 +96,7 @@
       ```
     - **적용 범위**: 위 코드가 적용된 서버라면 **로컬(Local)과 배포된 서버(Remote) 모두 동일하게 적용됨**. Swagger 우측 상단 `Authorize` 버튼에 키를 입력하면 정상 호출 가능.
 
-## 7. Embedding Model Resource Crash (Server OOM)
+## 7. Embedding Model Resource Crash (Server OOM) [2026-01-30]
 
 ### 7.1. 증상 (Symptoms)
 - **상황**: API 클라이언트를 통해 **임베딩 생성 요청**(`/api/v1/knowledge/candidates/batch`)을 짧은 시간동안 3번 보낸 직후, **서버가 응답 없음**.
@@ -114,7 +114,7 @@
 ---
 
 
-## 8. STT Hallucination (환각) 이슈
+## 8. STT Hallucination (환각) 이슈 [2026-02-08]
 
 Whisper 모델 사용 시, 실제 음성에 없는 텍스트가 생성되는 환각 현상이 발생. 주요 원인은 다음과 같음.
 
@@ -130,7 +130,7 @@ Whisper 모델 사용 시, 실제 음성에 없는 텍스트가 생성되는 환
 
 ---
 
-## 9. Knowledge Evaluation: Single-Target → Multi-Decision 전환
+## 9. Knowledge Evaluation: Single-Target → Multi-Decision 전환 [2026-02-08]
 
 ### 9.1. 문제 상황 (Problem)
 - **기존 방식**: Hybrid Search(Vector + Keyword RRF)를 통해 **단 1개의 유사 지식**만 선택하여 UPDATE/IGNORE 판단.
@@ -258,7 +258,7 @@ for (EvaluationDecision decision : evalResult.results()) {
 - **Confidence Score**: LLM이 각 결정에 대한 확신도를 반환하도록 하여 임계값 기반 필터링 가능.
 
 
-## 10. `NameError: name 'settings' is not defined`
+## 10. `NameError: name 'settings' is not defined` [2026-02-08]
 ### 10.1. 원인 (Cause)
 - **RunPod Client (`ai_server`)**: `app/core/config.py`의 `settings` 객체를 import하지 않고 사용하여 발생.
 - **RunPod Worker (`stt_server`)**: `inference_service.py`에서 `config.py`의 `settings`를 import하지 않고 `settings.VAD_FILTER` 등을 참조하여 발생. 특히 로컬 테스트와 달리 RunPod 환경에서만 발생하여 발견이 늦음.
@@ -267,7 +267,7 @@ for (EvaluationDecision decision : evalResult.results()) {
 - **AI Server**: `runpod_client.py` 에 `from app.core.config import settings` 추가.
 - **STT Server**: `inference_service.py` 에 `from config import settings` 추가.
 
-## 11. Feedback JSON에 Markdown 포함 문제 (Prompt Engineering)
+## 11. Feedback JSON에 Markdown 포함 문제 (Prompt Engineering) [2026-02-09]
 ### 11.1. 문제 상황 (Problem)
 - **현상**: AI가 생성한 피드백 JSON의 값(Value)에 `**bold**`나 `*italic*` 같은 마크다운 문법이 포함됨.
 - **영향**: 프론트엔드에서 JSON을 파싱하여 UI에 표시할 때, 원치 않는 마크다운 기호가 그대로 노출됨.
@@ -279,7 +279,7 @@ for (EvaluationDecision decision : evalResult.results()) {
 
 ---
 
-## 12. Endpoint Error Handling Standardization
+## 12. Endpoint Error Handling Standardization [2026-02-09]
 
 ### 12.1. 문제 상황 (Problem)
 - **일관성 부재**: API 별로 에러 응답 형식이 제각각이었음.
@@ -333,7 +333,7 @@ for (EvaluationDecision decision : evalResult.results()) {
 - **Debugging**: `runpod_client` 등 외부 연동 구간의 에러가 명확한 코드(`STT_TIMEOUT`, `GPU_FAIL`)로 기록되어 문제 원인 파악이 빨라짐.
 
 
-## 13. Solo Submission 빈 텍스트 400 에러 및 무한 대기 이슈
+## 13. Solo Submission 빈 텍스트 400 에러 및 무한 대기 이슈 [2026-02-10]
 
 ### 13.1. 문제 상황 (Problem)
 - **현상 1 (API Error)**: 음성 인식(STT) 결과가 빈 문자열(`""`)일 때, `/api/v1/solo/submissions` 호출 시 **400 Bad Request** 에러 발생.
@@ -362,7 +362,7 @@ for (EvaluationDecision decision : evalResult.results()) {
 user_text: str = Field(..., alias="userText", ...)
 ```
 
-## 14. STT Hallucination 및 무음 처리 개선
+## 14. STT Hallucination 및 무음 처리 개선 [2026-02-10]
 
 ### 14.1. 문제 상황 (Issue)
 - **증상**: 오디오의 무음 구간이나 잡음 구간에서 "MBC 뉴스", "시청해 주셔서 감사합니다" 등의 뜬금없는 텍스트(Hallucination)가 생성됨.
@@ -387,7 +387,7 @@ user_text: str = Field(..., alias="userText", ...)
 - `4-team-IMYME-ai/stt_server/config.py`: 파라미터 상수 정의.
 - `4-team-IMYME-ai/stt_server/services/inference_service.py`: `model.transcribe()` 호출 시 파라미터 주입 로직 추가.
 
-## 15. RunPod STT Timeout 및 RabbitMQ Queue 무한 대기 (Hang) 이슈
+## 15. RunPod STT Timeout 및 RabbitMQ Queue 무한 대기 (Hang) 이슈 [2026-02-22]
 
 ### 15.1. 문제 상황 (Problem)
 - **증상**: 로컬 환경에서 PvP E2E 테스트를 진행할 때, 특정 상황(예: 유효하지 않은 오디오 URL 전달, RunPod 서버 지연 등)에서 STT Worker가 전혀 응답하지 않고 **영원히 멈춰있는(Hang) 현상** 발생.
@@ -410,7 +410,7 @@ response = requests.post(run_url, headers=self.headers, json=payload, timeout=60
 
 **효과**: RunPod 서버가 60초 내에 응답하지 않으면 코드에서 즉시 `requests.exceptions.Timeout` 예외를 발생시킴. 이를 통해 STT Worker의 기본 에러 핸들링 로직이 작동하여, 해당 요청을 건너뛰고 큐 메시지를 정상적으로 실패(`.status = "FAIL"`)로 후처리할 수 있게 됨.
 
-## 16. RabbitMQ DLQ 및 3회 재시도(Retry) 작동 불능 방지
+## 16. RabbitMQ DLQ 및 3회 재시도(Retry) 작동 불능 방지 [2026-02-23]
 
 ### 16.1. 문제 상황 (Problem)
 - **증상**: 일시적인 네트워크 오류나 RunPod 지연이 발생했을 때, 메시지가 RabbitMQ의 재시도 큐(Retry Queue)를 통해 3번 재시도되지 않고 **단 1회 실패 후 즉시 종료(FAIL 발행)**됨.
@@ -435,7 +435,7 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 - 에러 원본 페이로드가 파괴되지 않고 DLQ에 보존되어 **개발자 디버깅(Replay) 편의성 극대화**.
 
 
-## 17. LLM-as-a-Judge 위치 편향(Positional Bias) 및 Logprobs 추출 이슈
+## 17. LLM-as-a-Judge 위치 편향(Positional Bias) 및 Logprobs 추출 이슈 [2026-02-25]
 
 ### 17.1. 문제 상황 (Problem)
 - **증상 1 (위치 편향)**: 두 개의 답변(A, B)을 비교 평가하는 프롬프트에서, `gemini-2.5-flash` 모델이 **실제 품질과 무관하게 항상 두 번째(B) 혹은 첫 번째(A) 위치의 답변을 승자로 선택**하는 극단적인 위치 편향(Positional Bias) 현상이 확인됨.
@@ -472,7 +472,7 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 - **최종 보정**: 추출된 Logprobs를 Softmax 정규화 및 양방향[A-B, B-A] 평균 교정(Bradley-Terry Model)에 사용하여, $\approx 99.7\%$의 매우 안정적이고 신뢰도 높은 확신 점수(Confidence Score)를 확보.
 
 
-## 18. RabbitMQ 통신 포트 인지 오류(Dev vs Release) 및 시작 순서 불일치
+## 18. RabbitMQ 통신 포트 인지 오류(Dev vs Release) 및 시작 순서 불일치 [2026-02-27]
 
 ### 18.1. 문제 상황 (Problem)
 - **증상 1 (15671 포트 큐 0개)**: 로컬 PC 브라우저에서 `15671` 포트로 관리 UI에 접속했으나, 생성되어 있어야 할 큐가 하나도 없는 빈 상태(0개)로 조회됨. 이때 이를 **Dev 서버의 MQ**라고 착각함.
@@ -508,7 +508,7 @@ Worker에서 에러를 덮어두지 않고, 예외를 명시적으로 던져(Rai
 3. **서비스 시작 순서 논리적 보장 (Shutdown Error 방지)**: 
    - **타이밍 제어**: AI 서버 파이썬 프로세스는 항상 **RabbitMQ 도커 컨테이너 상태가 완전히 `healthy`**이거나 최소한 5672 포트가 리스닝(Listening) 상태가 되었을 때 후행적으로 재시작 하도록 **"스타트업 순서(Startup Sequence) 보증 스크립트"**를 도입하여 연결 무한 실패를 방지했습니다.
 
-## 19. Pydantic 스키마 불일치로 인한 STT 메시지 전량 Reject
+## 19. Pydantic 스키마 불일치로 인한 STT 메시지 전량 Reject [2026-02-27]
 
 ### 19.1. 문제 상황 (Problem)
 - **증상**: RabbitMQ 연결이 정상화된 후, 메인 서버(Spring Boot)가 `pvp.stt.request` 큐로 보낸 메시지가 AI 서버의 Pydantic 검증 단계에서 전량 Reject 처리됨. 3회 재시도 후 DLQ로 이동.
@@ -554,7 +554,7 @@ AI 서버의 Pydantic 스키마(`pvp_schema.py`)와 메인 서버(Spring Boot)�
 
 
 
-## 20. RabbitMQ 큐 생성 주체 충돌 및 누락 이슈 (PRECONDITION_FAILED / NotAvailable)
+## 20. RabbitMQ 큐 생성 주체 충돌 및 누락 이슈 (PRECONDITION_FAILED / NotAvailable) [2026-03-01]
 
 ### 20.1. 문제 상황 (Problem)
 - **증상 1 (과거 - PRECONDITION_FAILED)**: AI 서버와 메인 서버가 각각 큐 생성을 시도하다가, 큐 속성(Durable 등) 불일치로 인해 보안 위반(`406 PRECONDITION_FAILED`) 에러가 발생하며 서버가 다운됨.
@@ -572,7 +572,83 @@ AI 서버의 Pydantic 스키마(`pvp_schema.py`)와 메인 서버(Spring Boot)�
 2. **`pvp.feedback.response` 큐 생성 및 바인딩**
 
 ### 20.4. 핵심 주의사항 (PRECONDITION_FAILED 재발 방지)
-과거의 충돌 악몽을 피하기 위해, 메인 서버가 응답 큐를 선언할 때 AI 서버(생산자)가 기대하는 스펙과 **단 하나의 속성도 어긋나면 안 됨.**
+과거의 충돌을 피하기 위해, 메인 서버가 응답 큐를 선언할 때 AI 서버(생산자)가 기대하는 스펙과 **단 하나의 속성도 어긋나면 안 됨.**
 - **Durable (영속성)**: 반드시 `true` 유지 (`QueueBuilder.durable(...)` 등 사용).
 - **Auto-delete, Exclusive**: 모두 기본값(`false`).
 - **Dead Letter Exchange (DLX)**: 응답 큐(`*.response`)에는 별도의 DLQ 라우팅 등 임의의 Arguments 추가 절대 금지.
+
+## 21. RabbitMQ 접속 URL 파싱 오류 및 .env 갱신 이슈 [2026-03-01]
+
+### 21.1. 문제 상황 (Problem)
+- **증상 1 (Invalid URL Error)**: AI 서버를 기동하거나 재시작했을 때, RabbitMQ 통신 모듈 초기화 중 다음과 같은 경고가 뜨며 큐 생성이 진행되지 않음.
+    ```text
+    WARNING:imyme-ai-server:RabbitMQ connection failed: Invalid URL: port can't be converted to integer. PvP workers disabled.
+    ```
+- **증상 2 (설정 변경 미반영)**: 비밀번호나 URL 오타를 눈치채고 서버 호스트의 `.env` 파일을 수정 후 `docker restart imyme-ai-server`를 했음에도 불구하고, 여전히 동일한 에러가 발생하며 서버의 모델 다운로드/초기화 로그가 보이지 않음.
+
+### 21.2. 원인 분석 (Root Cause)
+1. **증상 1 원인 (특수문자 URL 파싱 충돌)**
+   - RabbitMQ 주소(`amqps://아이디:비밀번호@호스트:포트`)를 설정할 때, 비밀번호에 포함된 **특수문자(`#`, `!` 등)** 가 URL 예약어로 파싱되어 발생한 문제.
+   - 특히 `#` 기호는 URL 프래그먼트(Fragment)로 인식되어, 뒤에 오는 호스트와 포트 문자열 전체가 잘려 나가면서 "포트를 정수형으로 변환할 수 없다"는 에러가 발생함.
+2. **증상 2 원인 (Docker Environment Caching)**
+   - Docker Container는 최초 실행(Create) 시점에 `.env` 파일의 변수들을 내부 메모리 환경변수로 주입받고 캐싱함.
+   - 단순한 `docker restart` 명령어는 완전히 죽은 컨테이너를 방금 전 상태 그대로 다시 깨울 뿐, 호스트 운영체제의 `.env` 파일 변경 사항을 새로 읽어들이지 않음.
+
+### 21.3. 해결 방안 (Solution)
+
+#### 1단계: 비밀번호 URL 인코딩 적용
+`.env` 파일에 접속 문자열을 기재할 때, 비밀번호 내 특수문자를 반드시 URL 인코딩 방식(`%XX`)으로 치환해서 기재해야 합니다. (따옴표는 생략 가능)
+자주 사용되는 특수문자 변환 목록:
+- `@` ➜ `%40`
+- `:` ➜ `%3A`
+- `/` ➜ `%2F`
+- `?` ➜ `%3F`
+- `#` ➜ `%23`
+- `!` ➜ `%21`
+- `$` ➜ `%24`
+
+```env
+# 수정 전 (특수문자 원본 사용 시 구문 분석 오류 발생 가능성 높음)
+RABBITMQ_URL=amqps://admin:P@ssw?rd!#123@b-afe...
+
+# 수정 후 (정상 동작: 특수문자를 안전하게 인코딩)
+RABBITMQ_URL=amqps://admin:P%40ssw%3Frd%21%23123@b-afe...
+```
+
+#### 2단계: `docker-compose`를 이용한 환경변수 주입 스크립트 실행
+변경한 리눅스 서버의 `.env` 환경 변수가 기존 도커 컨테이너에 강제로 주입되게 하려면, 단순히 서비스를 재시작하는 것이 아니라 컨테이너를 파괴하고 새로 만들어야(Recreate) 함. 
+
+```bash
+# 운영서버 터미널에서 실행하여 컨테이너 재생성 (Downtime 약 5초 발생)
+docker-compose up -d --force-recreate ai-server
+```
+이후 `docker logs -f imyme-ai-server` 명령어로 확인하면, RabbitMQ 큐 5장이 정상적으로 순차 선언되는 로그(Queue Declared...)를 확인할 수 있음.
+## 22. AI 서버-메인 서버-프론트엔드 간 Naming Convention 충돌 및 프롬프트 제약 이슈 [2026-03-02]
+
+### 22.1. 문제 상황 (Problem)
+- **증상 1 (피드백 데이터 소실)**: 프론트엔드 화면에서 PvP 비교 피드백 결과가 빈 값으로 처리되며 "피드백이 존재하지 않습니다."라는 오류 메시지가 표출됨. AI 서버 로그 상으로는 분명히 피드백이 정상 생성되어 Main 서버로 넘어간 상태였음.
+- **증상 2 (어색한 지시대명사)**: 화면에 출력된 코칭 문장 속에 "User A 측에서는..." 또는 "유저 B님은..." 과 같이, 서비스 화면에 노출되어서는 안 될 내부 식별자(프롬프트 변수명)가 텍스트에 그대로 섞여서 출력됨 ("상대방"이라는 자연스러운 호칭이 아님).
+
+### 22.2. 원인 분석 (Root Cause)
+두 증상은 각각 시스템 간 **"JSON 키 맵핑(명명 규칙) 변환 오류"**와 LLM의 **"맥락 치환 기능 결여"**가 원인이었습니다.
+
+1. **증상 1 (피드백 소실) - Snake vs Camel 변환 누락**:
+   - AI 서버는 Python 표준 스네이크 케이스인 `personalized_feedback` 이라는 키 이름으로 JSON을 생성하여 메인 서버로 전달함.
+   - 메인 서버(Spring Boot)는 이를 DTO(`FeedbackResponseDto`)에서 정상적으로 매핑해 받았으나, 정작 DB의 JSON 컬럼에 밀어 넣고 프론트엔드에 다시 내려줄 때는 **자바 표준인 카멜 케이스 `personalizedFeedback`으로 임의 강제 변환**하여 응답해 버림.
+   - 프론트엔드(React/Vue)는 과거 명세서에 적힌 스네이크 케이스나 예전 이름(`personalized`)만 찾고 있었기 때문에, 카멜 케이스로 탈바꿈된 필드를 찾지 못해 undefined 처리가 되어 빈 화면이 떴던 것.
+
+2. **증상 2 (User A 노출) - 프롬프트 제약 조건 부족**:
+   - `PVP_SYSTEM_PROMPT`에서 LLM에게 `{user_a_text}`, `{user_b_text}`라는 변수명에 담아 두 사람의 텍스트를 주입하면서, "이 둘을 비교해서 피드백을 써줘"라고만 지시했음.
+   - LLM 입장에서는 이 두 사람을 지칭할 대명사가 필요하니, 프롬프트에 제공된 아이디인 "User A", "유저 B"를 아무 생각 없이 결과 텍스트 안에 그대로 사용해버림. (서비스 맥락상 이것이 화면에 그대로 나갈 것이라는 사실을 LLM은 알 수 없음)
+
+### 22.3. 해결 방안 (Solution)
+
+1. **API 명세 재동기화 (프론트엔드 조치)**:
+   - DTO 변환 과정에서 카멜 케이스가 적용되는 Spring Boot의 특성을 인정하고, 프론트엔드 개발 파트에 **"PvP 결과 응답 JSON의 코칭 피드백 키값은 `personalizedFeedback` (카멜 케이스, F 대문자)을 사용해달라"**고 명세를 재정의/전달하여 데이터 소실을 해결함.
+
+2. **프롬프트 엔지니어링 제약 추가 (AI 서버 조치)**:
+   - AI 서버의 `PVP_SYSTEM_PROMPT` 내 `[Tone & Formatting Rules]` 섹션에 **CRITICAL(치명적) 수준의 강한 호칭 제약 조건**을 신설함.
+   ```text
+   2. **Naming (CRITICAL)**: NEVER output identifiers like "User A", "User B", "유저 A", or "사용자 B" in the feedback text. ALWAYS refer to the current user as "회원님" (You) and the other person as "상대방" (Opponent).
+   ```
+   - 이로써 LLM은 내부적으로 A와 B를 비교 계산하더라도, 사용자에게 보여줄 최종 텍스트를 인코딩할 때는 철저하게 "회원님은 ~하셨지만, 상대방은 ~했습니다." 식의 자연스러운 1:1 대화형 코칭 화법만 사용하도록 강제됨.
