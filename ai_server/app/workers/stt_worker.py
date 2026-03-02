@@ -13,7 +13,6 @@ by rabbitmq_service.py on the 3rd (final) failure attempt.
 """
 
 import logging
-import asyncio
 
 from aio_pika.abc import AbstractIncomingMessage
 
