@@ -50,7 +50,6 @@ class PvpFeedbackService:
         self.model = None
         self.strategies = list(PVP_PERSONA_PROMPTS.keys())
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
             self.model = genai.GenerativeModel("gemini-3-flash-preview")
 
     async def generate_pvp_feedback(

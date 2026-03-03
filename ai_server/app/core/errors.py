@@ -41,6 +41,9 @@ class ErrorCode(str, Enum):
     MISSING_CONTEXT = "MISSING_CONTEXT"
     """필수 파라미터(userText, criteria 등) 누락"""
 
+    INVALID_CRITERIA = "INVALID_CRITERIA"
+    """분석 기준(Criteria)이 누락되었거나 올바르지 않음"""
+
     INVALID_JSON = "INVALID_JSON"
     """JSON 형식이 올바르지 않음"""
 
