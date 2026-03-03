@@ -15,7 +15,6 @@ class FeedbackService:
 
     def __init__(self):
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
             self.model = genai.GenerativeModel("gemini-3-flash-preview")
 
     async def generate_feedback(

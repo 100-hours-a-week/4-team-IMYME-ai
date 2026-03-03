@@ -26,7 +26,6 @@ class KnowledgeService:
         # Production code should rely on standard Config initialization.
         # Test scripts must ensure environment is set up before importing/initializing.
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
             # 1. Refinement용 Flash 모델 (단순 정제, 속도/비용 중시)
             self.flash_model = genai.GenerativeModel("gemini-3-flash-preview")
             # 2. Evaluation용 Pro 모델 (논리적 추론, 정확도 중시)
