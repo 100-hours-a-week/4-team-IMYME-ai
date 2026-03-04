@@ -30,8 +30,12 @@ MAX_RETRY_COUNT = 3
 # Mapping: request queue name → response queue name
 # Used by the retry handler to publish FAIL responses on final failure.
 REQUEST_TO_RESPONSE_QUEUE = {
+    # PvP Mode
     settings.STT_REQUEST_QUEUE: settings.STT_RESULT_QUEUE,
     settings.FEEDBACK_REQUEST_QUEUE: settings.FEEDBACK_RESULT_QUEUE,
+    # Solo Mode
+    settings.SOLO_STT_REQUEST_QUEUE: settings.SOLO_STT_RESULT_QUEUE,
+    settings.SOLO_FEEDBACK_REQUEST_QUEUE: settings.SOLO_FEEDBACK_RESULT_QUEUE,
 }
 
 
@@ -44,7 +48,20 @@ class RabbitMQService:
     def __init__(self):
         self.connection: aio_pika.RobustConnection | None = None
         self.channel: aio_pika.RobustChannel | None = None
-        self.exchange: aio_pika.Exchange | None = None
+        self.pvp_exchange: aio_pika.Exchange | None = None
+        self.solo_exchange: aio_pika.Exchange | None = None
+
+    def _get_exchange(self, queue_name: str) -> aio_pika.Exchange:
+        """Return the correct exchange based on queue name prefix or contained sub-string."""
+        if "solo" in queue_name:
+            return self.solo_exchange
+        return self.pvp_exchange
+
+    def _get_dlq(self, queue_name: str) -> str:
+        """Return the correct DLQ name based on queue name prefix."""
+        if queue_name.startswith("solo."):
+            return settings.SOLO_DLQ
+        return settings.PVP_DLQ
 
     async def connect(self) -> None:
         """
@@ -61,13 +78,20 @@ class RabbitMQService:
         await self.channel.set_qos(prefetch_count=1)
 
         # Declare Direct Exchange (durable: survives server restart)
-        self.exchange = await self.channel.declare_exchange(
+        self.pvp_exchange = await self.channel.declare_exchange(
             settings.PVP_EXCHANGE, ExchangeType.DIRECT, durable=True
         )
 
         # Declare DLQ: permanent storage for messages that exceeded MAX_RETRY_COUNT
         dlq = await self.channel.declare_queue(settings.PVP_DLQ, durable=True)
-        await dlq.bind(self.exchange, routing_key=settings.PVP_DLQ)
+        await dlq.bind(self.pvp_exchange, routing_key=settings.PVP_DLQ)
+
+        # Solo Mode Exchange & DLQ
+        self.solo_exchange = await self.channel.declare_exchange(
+            settings.SOLO_EXCHANGE, ExchangeType.DIRECT, durable=True
+        )
+        solo_dlq = await self.channel.declare_queue(settings.SOLO_DLQ, durable=True)
+        await solo_dlq.bind(self.solo_exchange, routing_key=settings.SOLO_DLQ)
 
         logger.info("RabbitMQ connection established successfully.")
 
@@ -84,30 +108,32 @@ class RabbitMQService:
         x-death header count increments correctly, preventing infinite retry loops.
         """
         retry_queue_name = f"{queue_name}.retry"
+        exchange = self._get_exchange(queue_name)
+        exchange_name = exchange.name
 
         # 1) Retry Queue: messages wait here for 5s TTL, then auto-route back
         await self.channel.declare_queue(
             retry_queue_name,
             durable=True,
             arguments={
-                "x-dead-letter-exchange": settings.PVP_EXCHANGE,
+                "x-dead-letter-exchange": exchange_name,
                 "x-dead-letter-routing-key": queue_name,
                 "x-message-ttl": 5000,  # 5 second delay before retry
             },
         )
         retry_queue = await self.channel.get_queue(retry_queue_name)
-        await retry_queue.bind(self.exchange, routing_key=retry_queue_name)
+        await retry_queue.bind(exchange, routing_key=retry_queue_name)
 
         # 2) Main Queue: rejected messages route to the retry queue above
         queue = await self.channel.declare_queue(
             queue_name,
             durable=True,
             arguments={
-                "x-dead-letter-exchange": settings.PVP_EXCHANGE,
+                "x-dead-letter-exchange": exchange_name,
                 "x-dead-letter-routing-key": retry_queue_name,
             },
         )
-        await queue.bind(self.exchange, routing_key=queue_name)
+        await queue.bind(exchange, routing_key=queue_name)
         return queue
 
     async def publish(self, queue_name: str, message_body: dict) -> None:
@@ -124,7 +150,8 @@ class RabbitMQService:
             delivery_mode=DeliveryMode.PERSISTENT,
             content_type="application/json",
         )
-        await self.exchange.publish(message, routing_key=queue_name)
+        exchange = self._get_exchange(queue_name)
+        await exchange.publish(message, routing_key=queue_name)
         logger.info(f"Published message to '{queue_name}'")
 
     async def consume(
@@ -198,7 +225,7 @@ class RabbitMQService:
                         dlq_body = json.loads(message.body.decode())
                         dlq_body["_dlq_reason"] = str(e)
                         dlq_body["_dlq_retry_count"] = retry_count + 1
-                        await self.publish(settings.PVP_DLQ, dlq_body)
+                        await self.publish(self._get_dlq(queue_name), dlq_body)
                     except Exception as dlq_err:
                         logger.error(f"Failed to publish to DLQ: {dlq_err}")
 
