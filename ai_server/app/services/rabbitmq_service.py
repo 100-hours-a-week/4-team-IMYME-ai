@@ -248,7 +248,9 @@ class RabbitMQService:
                             }
                             # Include request_id for tracing
                             if "request_id" in original_body:
-                                fail_response["request_id"] = original_body["request_id"]
+                                fail_response["request_id"] = original_body[
+                                    "request_id"
+                                ]
                             # Include user_id for STT responses
                             if "user_id" in original_body:
                                 fail_response["user_id"] = original_body["user_id"]
