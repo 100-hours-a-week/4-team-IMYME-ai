@@ -63,6 +63,7 @@ async def handle_feedback_message(body: dict, message: AbstractIncomingMessage) 
     # 3. Build and publish SUCCESS response
     #    feedback_result is now a list of dicts (one per user)
     response = FeedbackResponse(
+        request_id=request.request_id,
         room_id=request.room_id,
         status="SUCCESS",
         feedbacks=[PvpUserFeedback(**fb) for fb in feedback_result],

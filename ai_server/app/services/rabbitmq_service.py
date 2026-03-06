@@ -187,9 +187,11 @@ class RabbitMQService:
 
             try:
                 body = json.loads(message.body.decode())
+                # Determine the identifier key: Solo uses attempt_id, PvP uses room_id
+                id_key = "attempt_id" if "solo" in queue_name else "room_id"
                 logger.info(
                     f"Consumed from '{queue_name}' (retry: {retry_count}): "
-                    f"room_id={body.get('room_id', 'N/A')}"
+                    f"{id_key}={body.get(id_key, 'N/A')}"
                 )
 
                 # Execute business logic callback (worker handler)
@@ -234,14 +236,19 @@ class RabbitMQService:
                     if response_queue:
                         try:
                             original_body = json.loads(message.body.decode())
+                            # Solo uses attempt_id, PvP uses room_id
+                            id_key = "attempt_id" if "solo" in queue_name else "room_id"
                             fail_response = {
-                                "room_id": original_body.get("room_id", 0),
+                                id_key: original_body.get(id_key, 0),
                                 "status": "FAIL",
                                 "error": (
                                     f"Message failed after {MAX_RETRY_COUNT} "
                                     f"retry attempts: {str(e)}"
                                 ),
                             }
+                            # Include request_id for tracing
+                            if "request_id" in original_body:
+                                fail_response["request_id"] = original_body["request_id"]
                             # Include user_id for STT responses
                             if "user_id" in original_body:
                                 fail_response["user_id"] = original_body["user_id"]
@@ -251,7 +258,7 @@ class RabbitMQService:
                             await self.publish(response_queue, fail_response)
                             logger.info(
                                 f"Published FAIL response to '{response_queue}' "
-                                f"for room={fail_response['room_id']}"
+                                f"for {id_key}={fail_response[id_key]}"
                             )
                         except Exception as fail_err:
                             logger.error(f"Failed to publish FAIL response: {fail_err}")

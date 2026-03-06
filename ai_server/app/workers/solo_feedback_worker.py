@@ -28,8 +28,7 @@ from app.services.feedback_service import feedback_service
 from app.schemas.solo_mq_schema import (
     SoloFeedbackRequest,
     SoloFeedbackResponse,
-    SoloFeedbackResult,
-    SoloFeedbackDetail,
+    SoloFeedbackData,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ async def handle_solo_feedback_message(
     # 1. Validate payload with Pydantic
     request = SoloFeedbackRequest(**body)
     logger.info(
-        f"[Solo Feedback Worker] Processing room={request.room_id}, user={request.user_id}"
+        f"[Solo Feedback Worker] Processing attempt={request.attempt_id}, user={request.user_id}"
     )
 
     # 2. Validate criteria
@@ -67,51 +66,51 @@ async def handle_solo_feedback_message(
         raise ValueError("분석 기준(Criteria)이 누락되었습니다.")
 
     # 3. Handle short text (hardcoded response, not an error)
-    if len(request.user_text.strip()) < MIN_TEXT_LENGTH:
+    if len(request.stt_text.strip()) < MIN_TEXT_LENGTH:
         logger.info(
             f"[Solo Feedback Worker] Text too short (<{MIN_TEXT_LENGTH} chars). "
-            f"Returning hardcoded feedback for room={request.room_id}."
+            f"Returning hardcoded feedback for attempt={request.attempt_id}."
         )
         response = SoloFeedbackResponse(
-            room_id=request.room_id,
+            request_id=request.request_id,
+            attempt_id=request.attempt_id,
             user_id=request.user_id,
             status="SUCCESS",
-            feedback=SoloFeedbackResult(
-                overall_score=0,
-                level=1,
-                feedback_detail=SoloFeedbackDetail(
-                    summarize="입력된 내용이 너무 짧거나 인식이 되지 않았습니다.",
-                    keyword=["음성 인식 실패", "짧은 답변"],
-                    facts="분석할 텍스트가 부족합니다.",
-                    understanding="사용자의 의도를 파악하기 어렵습니다.",
-                    personalized="조금 더 길게 말씀해주시거나, 다시 시도 부탁드립니다.",
-                ),
+            feedback=SoloFeedbackData(
+                score=0,
+                grade=1,
+                summary="입력된 내용이 너무 짧거나 인식이 되지 않았습니다.",
+                keywords=["음성 인식 실패", "짧은 답변"],
+                facts="분석할 텍스트가 부족합니다.",
+                understanding="사용자의 의도를 파악하기 어렵습니다.",
+                personalized_feedback="조금 더 길게 말씀해주시거나, 다시 시도 부탁드립니다.",
             ),
         )
         await rabbitmq_service.publish(
             settings.SOLO_FEEDBACK_RESULT_QUEUE, response.model_dump()
         )
         logger.info(
-            f"[Solo Feedback Worker] Published short-text response for room={request.room_id}"
+            f"[Solo Feedback Worker] Published short-text response for attempt={request.attempt_id}"
         )
         return
 
     # 4. Run Scoring + Feedback in parallel (same as analysis_service logic)
-    score_task = scoring_service.evaluate(request.user_text, request.criteria)
+    score_task = scoring_service.evaluate(request.stt_text, request.criteria)
     feedback_task = feedback_service.generate_feedback(
-        request.user_text, request.criteria, request.history
+        request.stt_text, request.criteria, request.history
     )
     score_result, feedback_result = await asyncio.gather(score_task, feedback_task)
 
     # 5. Build and publish SUCCESS response
     response = SoloFeedbackResponse(
-        room_id=request.room_id,
+        request_id=request.request_id,
+        attempt_id=request.attempt_id,
         user_id=request.user_id,
         status="SUCCESS",
-        feedback=SoloFeedbackResult(
-            overall_score=score_result["overall_score"],
-            level=score_result["level"],
-            feedback_detail=SoloFeedbackDetail(**feedback_result),
+        feedback=SoloFeedbackData(
+            score=score_result["score"],
+            grade=score_result["grade"],
+            **feedback_result,
         ),
     )
 
@@ -120,7 +119,7 @@ async def handle_solo_feedback_message(
     )
 
     logger.info(
-        f"[Solo Feedback Worker] Completed room={request.room_id}, user={request.user_id}"
+        f"[Solo Feedback Worker] Completed attempt={request.attempt_id}, user={request.user_id}"
     )
 
 

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 import aio_pika
 from app.core.config import settings
 
@@ -31,12 +32,13 @@ async def main():
 
     import random
 
-    stt_room_id = random.randint(10000, 90000)
-    fb_room_id = random.randint(10000, 90000)
+    stt_attempt_id = random.randint(10000, 90000)
+    fb_attempt_id = random.randint(10000, 90000)
 
     # 1. STT 테스트 요청 생성
     stt_request = {
-        "room_id": stt_room_id,
+        "request_id": str(uuid.uuid4()),
+        "attempt_id": stt_attempt_id,
         "user_id": 100,
         "audio_url": "https://www.w3schools.com/html/horse.txt",  # 정상적인 테스트용 오디오
         "timestamp": 1700000000,
@@ -50,9 +52,10 @@ async def main():
 
     # 2. Feedback 테스트 요청 생성
     fb_request = {
-        "room_id": fb_room_id,
+        "request_id": str(uuid.uuid4()),
+        "attempt_id": fb_attempt_id,
         "user_id": 100,
-        "user_text": "프로세스는 실행 중인 프로그램입니다.",
+        "stt_text": "프로세스는 실행 중인 프로그램입니다.",
         "criteria": {"keyword": "Process"},
         "history": [],
         "timestamp": 1700000000,

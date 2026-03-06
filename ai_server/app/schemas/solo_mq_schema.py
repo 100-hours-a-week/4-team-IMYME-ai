@@ -22,7 +22,8 @@ class SoloSTTRequest(BaseModel):
     S3 음성 파일 URL을 받아 텍스트로 변환을 요청합니다.
     """
 
-    room_id: int = Field(..., description="방 ID (Pass-through)")
+    request_id: str = Field(..., description="요청 고유 ID (UUID, 중복 방지 및 추적용)")
+    attempt_id: int = Field(..., description="면접 시도 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     audio_url: str = Field(..., description="S3 오디오 파일 URL")
     timestamp: int = Field(..., description="요청 시간 (Unix timestamp)")
@@ -34,7 +35,8 @@ class SoloSTTResponse(BaseModel):
     STT 변환 결과를 반환합니다.
     """
 
-    room_id: int = Field(..., description="방 ID (Pass-through)")
+    request_id: str = Field(..., description="요청 고유 ID (Request에서 Pass-through)")
+    attempt_id: int = Field(..., description="면접 시도 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
     stt_text: Optional[str] = Field(None, description="변환된 텍스트")
@@ -53,9 +55,10 @@ class SoloFeedbackRequest(BaseModel):
     STT 텍스트와 채점 기준, 피드백 이력으로 심층 분석을 요청합니다.
     """
 
-    room_id: int = Field(..., description="방 ID (Pass-through)")
+    request_id: str = Field(..., description="요청 고유 ID (UUID, 중복 방지 및 추적용)")
+    attempt_id: int = Field(..., description="면접 시도 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
-    user_text: str = Field(..., description="사용자의 STT 변환 텍스트")
+    stt_text: str = Field(..., description="사용자의 STT 변환 텍스트")
     criteria: Dict[str, Any] = Field(
         ..., description="채점 기준 (keyword, model_answer)"
     )
@@ -65,26 +68,18 @@ class SoloFeedbackRequest(BaseModel):
     timestamp: int = Field(..., description="요청 시간 (Unix timestamp)")
 
 
-class SoloFeedbackDetail(BaseModel):
+class SoloFeedbackData(BaseModel):
     """
-    Solo 피드백 분석 상세 결과.
-    """
-
-    summarize: str
-    keyword: List[Any]
-    facts: str
-    understanding: str
-    personalized: str
-
-
-class SoloFeedbackResult(BaseModel):
-    """
-    Solo 피드백 분석 결과 (점수 + 피드백 상세).
+    Solo 피드백 분석 결과 (Flat 구조).
     """
 
-    overall_score: int = Field(..., description="종합 점수 (0-100)")
-    level: int = Field(..., ge=1, le=5, description="레벨 (1-5)")
-    feedback_detail: SoloFeedbackDetail
+    score: int = Field(..., description="종합 점수 (0-100)")
+    grade: int = Field(..., ge=1, le=5, description="등급 (1-5)")
+    summary: str = Field(..., description="답변 요약")
+    keywords: List[str] = Field(..., description="포함/누락 키워드 리스트")
+    facts: str = Field(..., description="사실 관계 확인")
+    understanding: str = Field(..., description="이해 깊이 평가")
+    personalized_feedback: str = Field(..., description="개인화 코칭 피드백")
 
 
 class SoloFeedbackResponse(BaseModel):
@@ -93,10 +88,11 @@ class SoloFeedbackResponse(BaseModel):
     심층 분석 피드백 결과를 반환합니다.
     """
 
-    room_id: int = Field(..., description="방 ID (Pass-through)")
+    request_id: str = Field(..., description="요청 고유 ID (Request에서 Pass-through)")
+    attempt_id: int = Field(..., description="면접 시도 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
-    feedback: Optional[SoloFeedbackResult] = Field(
+    feedback: Optional[SoloFeedbackData] = Field(
         None, description="분석 결과 (성공 시)"
     )
     error: Optional[str] = Field(None, description="실패 시 에러 메시지")

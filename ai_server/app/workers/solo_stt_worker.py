@@ -69,7 +69,7 @@ async def handle_solo_stt_message(body: dict, message: AbstractIncomingMessage) 
     # 1. Validate payload with Pydantic
     request = SoloSTTRequest(**body)
     logger.info(
-        f"[Solo STT Worker] Processing room={request.room_id}, user={request.user_id}"
+        f"[Solo STT Worker] Processing attempt={request.attempt_id}, user={request.user_id}"
     )
 
     # 2. Validate URL format
@@ -90,7 +90,8 @@ async def handle_solo_stt_message(body: dict, message: AbstractIncomingMessage) 
 
     # 5. Build and publish SUCCESS response
     response = SoloSTTResponse(
-        room_id=request.room_id,
+        request_id=request.request_id,
+        attempt_id=request.attempt_id,
         user_id=request.user_id,
         status="SUCCESS",
         stt_text=stt_result.get("text", ""),
@@ -101,7 +102,7 @@ async def handle_solo_stt_message(body: dict, message: AbstractIncomingMessage) 
     )
 
     logger.info(
-        f"[Solo STT Worker] Completed room={request.room_id}, user={request.user_id}"
+        f"[Solo STT Worker] Completed attempt={request.attempt_id}, user={request.user_id}"
     )
 
 
