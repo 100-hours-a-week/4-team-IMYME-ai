@@ -19,7 +19,7 @@ class ScoringService:
 
     async def evaluate(self, user_text: str, criteria: dict) -> dict:
         """
-        Evaluates the text and returns {"score": int, "level": str}
+        Evaluates the text and returns {"score": int, "grade": int}
         """
         try:
             prompt = self._build_prompt(user_text, criteria)
@@ -32,8 +32,8 @@ class ScoringService:
             result = json.loads(cleaned_text)
 
             return {
-                "overall_score": result.get("overall_score", 0),
-                "level": result.get("level", 1),
+                "score": result.get("overall_score", 0),
+                "grade": result.get("level", 1),
             }
         except Exception as e:
             logger.error(f"Scoring failed: {e}")

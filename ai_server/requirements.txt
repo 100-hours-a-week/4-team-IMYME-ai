@@ -16,3 +16,7 @@ transformers>=4.38.0
 
 aio-pika>=9.4.0
 tenacity>=8.2.0
+
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+pgvector>=0.2.5
