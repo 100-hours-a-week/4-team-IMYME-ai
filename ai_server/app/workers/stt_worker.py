@@ -52,6 +52,7 @@ async def handle_stt_message(body: dict, message: AbstractIncomingMessage) -> No
 
     # 3. Build and publish SUCCESS response
     response = STTResponse(
+        request_id=request.request_id,
         room_id=request.room_id,
         user_id=request.user_id,
         status="SUCCESS",

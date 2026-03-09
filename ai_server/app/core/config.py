@@ -43,7 +43,19 @@ class Settings(BaseSettings):
     FEEDBACK_REQUEST_QUEUE: str = "pvp.feedback.request"
     FEEDBACK_RESULT_QUEUE: str = "pvp.feedback.response"
     PVP_EXCHANGE: str = "pvp.direct"
-    PVP_DLQ: str = "pvp.match.dlq"
+    PVP_DLQ: str = "ai.pvp.dlq"
+
+    # RabbitMQ Configuration (Solo Mode)
+    # RabbitMQ 설정 (Solo 모드)
+    SOLO_STT_REQUEST_QUEUE: str = "solo.stt.request"
+    SOLO_STT_RESULT_QUEUE: str = "solo.stt.response"
+    SOLO_FEEDBACK_REQUEST_QUEUE: str = "solo.feedback.request"
+    SOLO_FEEDBACK_RESULT_QUEUE: str = "solo.feedback.response"
+    SOLO_EXCHANGE: str = "solo.direct"
+    SOLO_DLQ: str = "ai.solo.dlq"
+
+    # PostgreSQL (Knowledge Base - Shared with Spring Boot)
+    DATABASE_URL: str = ""
 
     class Config:
         # Load settings from .env file if present
