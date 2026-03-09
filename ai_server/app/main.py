@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI):
         from app.services.rabbitmq_service import rabbitmq_service
         from app.workers.stt_worker import start_stt_consumer
         from app.workers.feedback_worker import start_feedback_consumer
+        from app.workers.solo_stt_worker import start_solo_stt_consumer
+        from app.workers.solo_feedback_worker import start_solo_feedback_consumer
 
         # RabbitMQ 연결 초기화
         await rabbitmq_service.connect()
@@ -48,9 +50,14 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_feedback_consumer())
         logger.info("PvP workers started successfully.")
 
+        # Solo 워커를 백그라운드 태스크로 구동
+        asyncio.create_task(start_solo_stt_consumer())
+        asyncio.create_task(start_solo_feedback_consumer())
+        logger.info("Solo workers started successfully.")
+
     except Exception as e:
-        # RabbitMQ 연결 실패 시 앱은 정상 구동 (기존 REST API는 유지)
-        logger.warning(f"RabbitMQ connection failed: {e}. PvP workers disabled.")
+        # RabbitMQ 연결 실패 시 앱은 정상 구동 (knowledge 등 REST API는 유지)
+        logger.warning(f"RabbitMQ connection failed: {e}. MQ workers disabled.")
 
     yield
 

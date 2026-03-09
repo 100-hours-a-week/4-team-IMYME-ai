@@ -21,6 +21,7 @@ class STTRequest(BaseModel):
     S3 음성 파일 URL을 받아 텍스트로 변환을 요청합니다.
     """
 
+    request_id: str = Field(..., description="요청 고유 ID (UUID, 중복 방지 및 추적용)")
     room_id: int = Field(..., description="방 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     audio_url: str = Field(..., description="S3 오디오 파일 URL")
@@ -33,6 +34,7 @@ class STTResponse(BaseModel):
     STT 변환 결과를 반환합니다.
     """
 
+    request_id: str = Field(..., description="요청 고유 ID (Request에서 Pass-through)")
     room_id: int = Field(..., description="방 ID (Pass-through)")
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
@@ -70,6 +72,7 @@ class FeedbackRequest(BaseModel):
     2명의 사용자 STT 결과를 취합하여 비교 피드백을 요청합니다.
     """
 
+    request_id: str = Field(..., description="요청 고유 ID (UUID, 중복 방지 및 추적용)")
     room_id: int = Field(..., description="방 ID")
     criteria: FeedbackCriteria = Field(..., description="채점 기준")
     users: List[PvpUserData] = Field(
@@ -98,6 +101,7 @@ class FeedbackResponse(BaseModel):
     PvP 비교 분석 피드백 결과를 반환합니다.
     """
 
+    request_id: str = Field(..., description="요청 고유 ID (Request에서 Pass-through)")
     room_id: int = Field(..., description="방 ID")
     status: str = Field(..., description="처리 상태 (SUCCESS / FAIL)")
     feedbacks: Optional[List[PvpUserFeedback]] = Field(
