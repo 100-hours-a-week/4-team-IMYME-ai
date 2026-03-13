@@ -3,15 +3,13 @@ name: AI CI → ECR (Kubernetes Deploy via ArgoCD)
 on:
   pull_request:
     branches:
-      # - main
-      - feat/k8sCI
+      - main
     paths:
       - ".github/**"
       - "ai_server/**"
   push:
     branches:
-      # - main
-      - feat/k8sCI
+      - main
     paths:
       - ".github/**"
       - "ai_server/**"
@@ -62,7 +60,7 @@ jobs:
 
   image-push:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/k8sCI'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
@@ -91,7 +89,7 @@ jobs:
           platforms: linux/arm64
           tags: |
             219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:${{ github.sha }}
-            219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:yujin-test-latest
+            219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:prod-latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
