@@ -20,11 +20,16 @@ class AudioLoader:
             response = requests.get(url, stream=True)
             response.raise_for_status()
 
+            # Determine file extension from URL (strip query params)
+            # URL에서 파일 확장자를 추출 (쿼리 파라미터 제거)
+            clean_url = url.split("?")[0]
+            ext = os.path.splitext(clean_url)[1] or ".mp3"
+
             # Create a temporary file to save the downloaded content
             # 다운로드한 내용을 저장할 임시 파일 생성
             # delete=False ensures the file exists after closing, so we can pass the path to Whisper
             # delete=False는 파일을 닫은 후에도 유지하여 Whisper에 경로를 전달할 수 있게 함
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
                 for chunk in response.iter_content(chunk_size=self.chunk_size):
                     if chunk:
                         temp_file.write(chunk)
