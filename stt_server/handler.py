@@ -6,13 +6,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("runpod-handler")
 
-# Initialize Service
+# Initialize Service (ModelService singleton loads model in __new__)
 inference_service = InferenceService()
-
-# Initialize the model once during cold start
-logger.info("Initializing Inference Service...")
-inference_service.model_service.load_model()
-logger.info("Service initialized.")
+logger.info("Inference Service initialized.")
 
 
 # Handler function that RunPod calls for each request
