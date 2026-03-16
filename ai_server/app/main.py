@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
         from app.workers.feedback_worker import start_feedback_consumer
         from app.workers.solo_stt_worker import start_solo_stt_consumer
         from app.workers.solo_feedback_worker import start_solo_feedback_consumer
+        from app.workers.challenge_worker import start_challenge_consumer
 
         # RabbitMQ 연결 초기화
         await rabbitmq_service.connect()
@@ -54,6 +55,10 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(start_solo_stt_consumer())
         asyncio.create_task(start_solo_feedback_consumer())
         logger.info("Solo workers started successfully.")
+
+        # Challenge 워커를 백그라운드 태스크로 구동
+        asyncio.create_task(start_challenge_consumer())
+        logger.info("Challenge workers started successfully.")
 
     except Exception as e:
         # RabbitMQ 연결 실패 시 앱은 정상 구동 (knowledge 등 REST API는 유지)
