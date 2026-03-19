@@ -102,9 +102,12 @@ class RabbitMQService:
         self.challenge_exchange = await self.channel.declare_exchange(
             settings.CHALLENGE_EXCHANGE, ExchangeType.DIRECT, durable=True
         )
-        challenge_dlq = await self.channel.declare_queue(settings.CHALLENGE_DLQ, durable=True)
-        await challenge_dlq.bind(self.challenge_exchange, routing_key=settings.CHALLENGE_DLQ)
-
+        challenge_dlq = await self.channel.declare_queue(
+            settings.CHALLENGE_DLQ, durable=True
+        )
+        await challenge_dlq.bind(
+            self.challenge_exchange, routing_key=settings.CHALLENGE_DLQ
+        )
 
         logger.info("RabbitMQ connection established successfully.")
 

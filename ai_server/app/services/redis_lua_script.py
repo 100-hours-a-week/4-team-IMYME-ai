@@ -1,93 +1,110 @@
-from typing import Optional, List
+"""
+Challenge Mode Redis Lua Scripts (Phase 2: 설계.md 기반 리팩토링)
+
+스마트 Lua 스크립트:
+ - PAIR: 리스트에 2개 이상 쌓이면 2개를 팝하여 반환
+ - PROMOTE: 해당 레벨의 마지막 노드인데 짝이 없는 경우 (홀수 부전승)
+ - WAIT: 아직 짝꿍이 도착하지 않음
+"""
+
+from typing import List, Tuple
 import logging
 import redis.asyncio as aioredis
 
 logger = logging.getLogger("imyme-redis-lua")
 
+
 class RedisLuaScripts:
-    def __init__(self, redis_client):
-        """
-        Initializes Lua scripts for Challenge Mode (Phase 2).
-        Requires an active aioredis client.
-        """
+    def __init__(self, redis_client: aioredis.Redis):
         self.redis = redis_client
-        self._push_and_check_script = None
+        self._smart_push_script = None
 
     async def init_scripts(self):
-        """
-        Loads the Lua script into Redis. Call this during app startup.
-        """
-        # Lua script: 
-        # 1. Pushes the merged_array into the target level list.
-        # 2. Checks if the list length >= 2.
-        # 3. If yes, pops 2 elements from the list and returns them so the worker can publish the next mission.
-        # 4. If no, returns nil.
-        # KEYS[1]: The Redis list key (e.g., pairs:job:999:level:1)
-        # ARGV[1]: The serialized JSON array string
-        push_check_lua = """
-        redis.call('RPUSH', KEYS[1], ARGV[1])
-        local len = redis.call('LLEN', KEYS[1])
-        if len >= 2 then
-            local p1 = redis.call('LPOP', KEYS[1])
-            local p2 = redis.call('LPOP', KEYS[1])
-            return {p1, p2}
+        """서버 시작 시 Lua 스크립트를 Redis에 로드합니다."""
+        # KEYS[1] = level list key  (예: pairs:job:{id}:level:1)
+        # KEYS[2] = arrived counter (예: pairs:job:{id}:level:1:arrived)
+        # ARGV[1] = serialized merged array (JSON string)
+        # ARGV[2] = TTL (seconds)
+        # ARGV[3] = expected_count (이 레벨에 도달해야 할 총 노드 수)
+        #
+        # Returns:
+        #   {"PAIR", elem1, elem2}  -> 짝이 맞아서 병합 대상 2개 반환
+        #   {"PROMOTE", elem1}      -> 홀수 부전승: 이 레벨 마지막 노드
+        #   {"WAIT"}                -> 짝꿍을 더 기다려야 함
+        smart_lua = """
+        local list_key      = KEYS[1]
+        local arrived_key   = KEYS[2]
+        local data           = ARGV[1]
+        local ttl            = tonumber(ARGV[2])
+        local expected_count = tonumber(ARGV[3])
+
+        -- 1. Push data into the level list
+        redis.call('RPUSH', list_key, data)
+
+        -- 2. TTL 설정 (최초 1회)
+        local cur_ttl = redis.call('TTL', list_key)
+        if cur_ttl == -1 or cur_ttl == -2 then
+            redis.call('EXPIRE', list_key, ttl)
+        end
+
+        -- 3. 도달 카운터 증가 (이 레벨에 몇 개의 노드가 도착했는지)
+        local arrived = redis.call('INCR', arrived_key)
+        redis.call('EXPIRE', arrived_key, ttl)
+
+        -- 4. 리스트 길이 확인
+        local list_len = redis.call('LLEN', list_key)
+
+        -- 5. 분기 로직
+        if list_len >= 2 then
+            -- 짝이 맞음: 2개 꺼내서 반환
+            local p1 = redis.call('LPOP', list_key)
+            local p2 = redis.call('LPOP', list_key)
+            return {"PAIR", p1, p2}
+        elseif arrived == expected_count and list_len == 1 then
+            -- 이 레벨의 마지막 노드인데 짝이 없음 -> 부전승(Promote)
+            local lone = redis.call('LPOP', list_key)
+            return {"PROMOTE", lone}
         else
-            return nil
+            -- 아직 짝꿍 대기 중
+            return {"WAIT"}
         end
         """
-        self._push_and_check_script = self.redis.register_script(push_check_lua)
-        logger.info("Challenge Mode Lua scripts registered.")
+        self._smart_push_script = self.redis.register_script(smart_lua)
+        logger.info("Challenge Mode Smart Lua scripts registered.")
 
-    async def push_and_check_pairs(self, list_key: str, serialized_array: str, ttl: int = 7200) -> Optional[List[str]]:
+    async def push_and_route(
+        self,
+        list_key: str,
+        arrived_key: str,
+        serialized_array: str,
+        expected_count: int,
+        ttl: int = 7200,
+    ) -> Tuple[str, List[str]]:
         """
-        Atomically pushes a merged array into the level list and pops if a pair is formed.
-        Also guarantees TTL is applied to the key to prevent memory leaks (Infrastructure Checkpoint).
-        """
-        if not self._push_and_check_script:
-            raise RuntimeError("Lua scripts not initialized. Call init_scripts() first.")
+        원자적으로 병합 결과를 레벨 리스트에 넣고 다음 행동을 결정합니다.
 
-        # Ensure TTL is set on the key before or during the process.
-        # In a strict environment, TTL can be set inside the Lua script, 
-        # but for simplicity, we do it in python if it's the first element.
-        # We will use Lua to ensure atomicity.
-
-        lua_with_ttl = """
-        local key = KEYS[1]
-        local data = ARGV[1]
-        local ttl = tonumber(ARGV[2])
-        
-        -- Push data
-        redis.call('RPUSH', key, data)
-        
-        -- Set TTL if it doesn't have one
-        local current_ttl = redis.call('TTL', key)
-        if current_ttl == -1 or current_ttl == -2 then
-            redis.call('EXPIRE', key, ttl)
-        end
-        
-        -- Check and Pop
-        local len = redis.call('LLEN', key)
-        if len >= 2 then
-            local p1 = redis.call('LPOP', key)
-            local p2 = redis.call('LPOP', key)
-            return {p1, p2}
-        else
-            return {}
-        end
+        Returns:
+            ("PAIR", [arr1_json, arr2_json])   - 짝이 맞아 병합할 2개 반환
+            ("PROMOTE", [lone_arr_json])       - 홀수 부전승, 승급 대상 1개 반환
+            ("WAIT", [])                       - 짝꿍 대기 중
         """
-        
-        # Override the simple script with the robust TTL embedded one
-        script = self.redis.register_script(lua_with_ttl)
-        
+        if not self._smart_push_script:
+            raise RuntimeError(
+                "Lua scripts not initialized. Call init_scripts() first."
+            )
+
         try:
-            result = await script(keys=[list_key], args=[serialized_array, str(ttl)])
-            if result and len(result) == 2:
-                # result is a list of two string-serialized arrays
-                return [r.decode("utf-8") if isinstance(r, bytes) else r for r in result]
-            return None
-        except Exception as e:
-            logger.error(f"Error executing push_and_check_pairs Lua script: {e}")
-            raise
+            result = await self._smart_push_script(
+                keys=[list_key, arrived_key],
+                args=[serialized_array, str(ttl), str(expected_count)],
+            )
 
-# A global instance placeholder, needs to be initialized with the actual redis client in main.py or dependencies
-# redis_lua_manager = RedisLuaScripts(redis_client)
+            # result는 list[bytes] 형태
+            decoded = [r.decode("utf-8") if isinstance(r, bytes) else r for r in result]
+            action = decoded[0]
+            data = decoded[1:]
+            return action, data
+
+        except Exception as e:
+            logger.error(f"Error executing smart Lua script: {e}")
+            raise
