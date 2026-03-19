@@ -54,8 +54,24 @@ class Settings(BaseSettings):
     SOLO_EXCHANGE: str = "solo.direct"
     SOLO_DLQ: str = "ai.solo.dlq"
 
+    # RabbitMQ Configuration (Challenge Mode)
+    CHALLENGE_EVAL_QUEUE: str = "q.pairs.eval"  # Legacy alias
+    CHALLENGE_MERGE_QUEUE: str = "q.pairs.eval"  # AI 병합 작업 큐
+    CHALLENGE_FEEDBACK_QUEUE: str = "q.challenge.feedback"  # Fan-out 피드백 큐
+    CHALLENGE_COMPLETED_QUEUE: str = "challenge.final.done"  # BE 최종 완료 알림
+    CHALLENGE_EXCHANGE: str = "challenge.direct"
+    CHALLENGE_DLQ: str = "ai.challenge.dlq"
+
+    # Redis Configuration
+    REDIS_URL: str = ""
+
     # PostgreSQL (Knowledge Base - Shared with Spring Boot)
     DATABASE_URL: str = ""
+
+    # GCP Configuration (Vertex AI)
+    GCP_PROJECT: str = ""
+    GCP_LOCATION: str = ""
+    PAIRS_MODEL_ID: str = ""
 
     class Config:
         # Load settings from .env file if present

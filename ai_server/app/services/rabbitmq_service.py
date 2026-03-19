@@ -50,17 +50,22 @@ class RabbitMQService:
         self.channel: aio_pika.RobustChannel | None = None
         self.pvp_exchange: aio_pika.Exchange | None = None
         self.solo_exchange: aio_pika.Exchange | None = None
+        self.challenge_exchange: aio_pika.Exchange | None = None
 
     def _get_exchange(self, queue_name: str) -> aio_pika.Exchange:
         """Return the correct exchange based on queue name prefix or contained sub-string."""
         if "solo" in queue_name:
             return self.solo_exchange
+        if "pairs" in queue_name or "ranking" in queue_name:
+            return self.challenge_exchange
         return self.pvp_exchange
 
     def _get_dlq(self, queue_name: str) -> str:
         """Return the correct DLQ name based on queue name prefix."""
         if queue_name.startswith("solo."):
             return settings.SOLO_DLQ
+        if "pairs" in queue_name or "ranking" in queue_name:
+            return settings.CHALLENGE_DLQ
         return settings.PVP_DLQ
 
     async def connect(self) -> None:
@@ -92,6 +97,17 @@ class RabbitMQService:
         )
         solo_dlq = await self.channel.declare_queue(settings.SOLO_DLQ, durable=True)
         await solo_dlq.bind(self.solo_exchange, routing_key=settings.SOLO_DLQ)
+
+        # Challenge Mode Exchange & DLQ
+        self.challenge_exchange = await self.channel.declare_exchange(
+            settings.CHALLENGE_EXCHANGE, ExchangeType.DIRECT, durable=True
+        )
+        challenge_dlq = await self.channel.declare_queue(
+            settings.CHALLENGE_DLQ, durable=True
+        )
+        await challenge_dlq.bind(
+            self.challenge_exchange, routing_key=settings.CHALLENGE_DLQ
+        )
 
         logger.info("RabbitMQ connection established successfully.")
 

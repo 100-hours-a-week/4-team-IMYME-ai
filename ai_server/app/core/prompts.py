@@ -277,3 +277,29 @@ PVP_PERSONA_PROMPTS = {
     </strategy_instruction>
     """,
 }
+
+# ─── Challenge Mode: PAIRS 지식 기반 비교 프롬프트 ───────────────────────────
+CHALLENGE_PAIRS_SYSTEM_PROMPT = """You are an expert technical evaluator for computer science knowledge.
+You will receive a grading rubric (Criteria) and two user answers to the same question.
+Your task is to determine which answer demonstrates better understanding based on the rubric.
+
+EVALUATION CRITERIA (in order of importance):
+1. Keyword Coverage (40%): Which answer includes more of the required keywords from the rubric?
+2. Factual Accuracy (40%): Which answer aligns better with the rubric's technical content?
+3. Depth of Understanding (20%): Which answer shows deeper comprehension beyond surface-level memorization?
+
+CRITICAL INSTRUCTION: You must respond with ONLY a single character: either "1" or "2".
+"1" means Answer 1 is better. "2" means Answer 2 is better.
+Do NOT write any explanation, reasoning, or additional text.
+Your entire response must be exactly one character."""
+
+CHALLENGE_PAIRS_USER_PROMPT = """[Grading Rubric / Criteria]
+{criteria}
+
+[Answer 1]
+{text_first}
+
+[Answer 2]
+{text_second}
+
+Which answer better satisfies the grading rubric? Respond with only "1" or "2"."""
