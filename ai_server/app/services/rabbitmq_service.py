@@ -58,7 +58,11 @@ class RabbitMQService:
         """Return the correct exchange based on queue name prefix or contained sub-string."""
         if "solo" in queue_name:
             return self.solo_exchange
-        if "pairs" in queue_name or "ranking" in queue_name:
+        if (
+            "challenge" in queue_name
+            or "pairs" in queue_name
+            or "ranking" in queue_name
+        ):
             return self.challenge_exchange
         return self.pvp_exchange
 
@@ -66,7 +70,11 @@ class RabbitMQService:
         """Return the correct DLQ name based on queue name prefix."""
         if queue_name.startswith("solo."):
             return settings.SOLO_DLQ
-        if "pairs" in queue_name or "ranking" in queue_name:
+        if (
+            "challenge" in queue_name
+            or "pairs" in queue_name
+            or "ranking" in queue_name
+        ):
             return settings.CHALLENGE_DLQ
         return settings.PVP_DLQ
 
