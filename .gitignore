@@ -40,3 +40,4 @@ build/
 
 # Tests
 tests/
+pytest.ini
