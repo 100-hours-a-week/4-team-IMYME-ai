@@ -5,7 +5,7 @@ Provides asynchronous message queue communication using aio-pika's RobustConnect
 for automatic reconnection on network failures.
 
 Key features:
-- QoS (prefetch_count=1): Sequential processing, one message at a time per worker.
+- QoS (prefetch_count=6): Sequential processing, one message at a time per worker.
 - Manual Ack/Nack: Messages are acknowledged only after successful processing.
 - 3-Retry with DLQ: Failed messages are retried up to 3 times via a TTL-based
   retry queue. On the 3rd failure, a FAIL response is published to the result
@@ -89,8 +89,9 @@ class RabbitMQService:
         self.connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
         self.channel = await self.connection.channel()
 
-        # QoS: process one message at a time per worker (sequential guarantee)
-        await self.channel.set_qos(prefetch_count=1)
+        # QoS will be set per-consumer in consume() to fine-tune parallelism
+        # (STT workers → prefetch=6 to match RunPod capacity;
+        #  Feedback/Merge workers → prefetch=6 for Gemini-backed parallelism)
 
         # Declare Direct Exchange (durable: survives server restart)
         self.pvp_exchange = await self.channel.declare_exchange(
@@ -203,6 +204,15 @@ class RabbitMQService:
             callback: Message processing callback (parsed_body, raw_message)
         """
         queue = await self.declare_and_bind_queue(queue_name)
+
+        # Per-consumer prefetch tuning:
+        #   STT queues   → prefetch=6
+        #   Other queues → prefetch=6  (Gemini-backed; no RunPod cap)
+        is_stt_queue = queue_name.endswith(".stt.request") or (
+            queue_name.endswith(".feedback.request") and "challenge" in queue_name
+        )
+        prefetch = 6 if is_stt_queue else 6
+        await queue.channel.set_qos(prefetch_count=prefetch)
 
         # Determine the response queue for publishing FAIL on final failure
         response_queue = REQUEST_TO_RESPONSE_QUEUE.get(queue_name)
