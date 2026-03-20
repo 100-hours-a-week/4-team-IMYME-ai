@@ -55,8 +55,10 @@ class Settings(BaseSettings):
     SOLO_DLQ: str = "ai.solo.dlq"
 
     # RabbitMQ Configuration (Challenge Mode)
-    CHALLENGE_EVAL_QUEUE: str = "q.pairs.eval"  # Legacy alias
-    CHALLENGE_MERGE_QUEUE: str = "q.pairs.eval"  # AI 병합 작업 큐
+    CHALLENGE_STT_REQUEST_QUEUE: str = "challenge.feedback.request"  # STT
+    CHALLENGE_STT_RESULT_QUEUE: str = "challenge.feedback.response"  # STT결과
+    CHALLENGE_EVAL_QUEUE: str = "challenge.pairs.eval"  # Legacy alias
+    CHALLENGE_MERGE_QUEUE: str = "challenge.pairs.eval"  # AI 병합 작업 큐
     CHALLENGE_FEEDBACK_QUEUE: str = "q.challenge.feedback"  # Fan-out 피드백 큐
     CHALLENGE_COMPLETED_QUEUE: str = "challenge.final.done"  # BE 최종 완료 알림
     CHALLENGE_EXCHANGE: str = "challenge.direct"

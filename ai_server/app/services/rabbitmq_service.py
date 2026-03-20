@@ -36,6 +36,8 @@ REQUEST_TO_RESPONSE_QUEUE = {
     # Solo Mode
     settings.SOLO_STT_REQUEST_QUEUE: settings.SOLO_STT_RESULT_QUEUE,
     settings.SOLO_FEEDBACK_REQUEST_QUEUE: settings.SOLO_FEEDBACK_RESULT_QUEUE,
+    # Challenge STT
+    settings.CHALLENGE_STT_REQUEST_QUEUE: settings.CHALLENGE_STT_RESULT_QUEUE,
 }
 
 
@@ -203,8 +205,12 @@ class RabbitMQService:
 
             try:
                 body = json.loads(message.body.decode())
-                # Determine the identifier key: Solo uses attempt_id, PvP uses room_id
-                id_key = "attempt_id" if "solo" in queue_name else "room_id"
+                # Determine the primary identifier for logging
+                id_key = "attempt_id"
+                if "challenge" in queue_name:
+                    id_key = "attemptId"
+                elif "pvp" in queue_name:
+                    id_key = "room_id"
                 logger.info(
                     f"Consumed from '{queue_name}' (retry: {retry_count}): "
                     f"{id_key}={body.get(id_key, 'N/A')}"
@@ -252,27 +258,34 @@ class RabbitMQService:
                     if response_queue:
                         try:
                             original_body = json.loads(message.body.decode())
-                            # Solo uses attempt_id, PvP uses room_id
-                            id_key = "attempt_id" if "solo" in queue_name else "room_id"
                             fail_response = {
-                                id_key: original_body.get(id_key, 0),
                                 "status": "FAIL",
                                 "error": (
                                     f"Message failed after {MAX_RETRY_COUNT} "
                                     f"retry attempts: {str(e)}"
                                 ),
                             }
-                            # Include request_id for tracing
-                            if "request_id" in original_body:
-                                fail_response["request_id"] = original_body[
-                                    "request_id"
-                                ]
-                            # Include user_id for STT responses
-                            if "user_id" in original_body:
-                                fail_response["user_id"] = original_body["user_id"]
-                            # Include feedbacks:null for Feedback responses
-                            if "users" in original_body:
+                            # Preserve all known identifiers from the original body
+                            for key in [
+                                "room_id",
+                                "attempt_id",
+                                "attemptId",
+                                "challengeId",
+                                "request_id",
+                                "user_id",
+                            ]:
+                                if key in original_body:
+                                    fail_response[key] = original_body[key]
+
+                            # Schema-specific Null fields for final failure
+                            if (
+                                "challenge" in queue_name
+                                and "feedback.request" in queue_name
+                            ):
+                                fail_response["sttText"] = None
+                            elif "users" in original_body:
                                 fail_response["feedbacks"] = None
+
                             await self.publish(response_queue, fail_response)
                             logger.info(
                                 f"Published FAIL response to '{response_queue}' "
