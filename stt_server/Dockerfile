@@ -57,6 +57,7 @@ COPY stt_server/ /app/
 # 패키지 임포트를 위해 Python 경로 설정
 ENV PYTHONPATH=/app
 
-# Set the command to run the RunPod handler
-# RunPod 핸들러를 실행하기 위한 명령 설정
-CMD ["python", "-u", "/app/handler.py"]
+# Set the command to run the FastAPI app via uvicorn
+# FastAPI 서버를 구동하기 위해 Uvicorn을 실행
+# host 0.0.0.0으로 주어 외부(RunPod)에서 8000포트로 접근 가능하게 함
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
