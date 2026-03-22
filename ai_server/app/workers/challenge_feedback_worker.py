@@ -27,6 +27,11 @@ import google.generativeai as genai_standard
 
 logger = logging.getLogger("imyme-challenge-feedback-worker")
 
+# ── 짧은 텍스트(기권) 방어 상수 (pvp_feedback_service.py와 동일) ──
+MIN_TEXT_LENGTH = 5
+FORFEIT_PLACEHOLDER = "(답변을 제출하지 않아 기권 처리되었습니다.)"
+DRAW_MSG = "모든 유저의 내용이 부족하여 피드백을 할 수 없습니다."
+
 # ── Global State ──
 redis_client: Optional[aioredis.Redis] = None
 
@@ -56,18 +61,29 @@ async def _get_rubric(knowledge_id: str) -> str:
     return rubric_text
 
 
-async def _get_participant_text(job_id: str, attempt_id: str) -> str:
-    """Redis Hash에서 특정 참가자의 STT 텍스트를 조회합니다."""
+async def _get_participant_data(job_id: str, attempt_id: str) -> dict:
+    """Redis Hash에서 특정 참가자의 전체 데이터(userId, sttText)를 조회합니다."""
     hash_key = f"challenge:{job_id}:participants"
     raw = await redis_client.hget(hash_key, attempt_id)
     if raw is None:
-        return ""
+        return {"userId": None, "sttText": ""}
     decoded = raw.decode("utf-8") if isinstance(raw, bytes) else raw
     try:
         parsed = json.loads(decoded)
-        return parsed.get("sttText", "")
+        return {"userId": parsed.get("userId"), "sttText": parsed.get("sttText", "")}
     except json.JSONDecodeError:
-        return decoded
+        return {"userId": None, "sttText": decoded}
+
+
+def _hardcoded_feedback(msg: str) -> dict:
+    """LLM 호출 없이 즉시 반환할 하드코딩 피드백을 생성합니다."""
+    return {
+        "summary": msg,
+        "keywords": [],
+        "facts": msg,
+        "understanding": msg,
+        "personalized_feedback": msg,
+    }
 
 
 async def _generate_solo_feedback(criteria: str, user_text: str) -> dict:
@@ -135,7 +151,10 @@ async def _generate_pvp_feedback(
             text = text.strip()
         parsed = json.loads(text)
         # user_B 부분만 추출하여 반환 (현재 유저 = user_B)
-        return parsed.get("user_B", parsed)
+        user_b = parsed.get("user_B", parsed)
+        user_b.pop("user_id", None)
+        user_b.pop("score", None)
+        return user_b
     except (json.JSONDecodeError, AttributeError) as e:
         logger.error(f"Failed to parse PvP feedback JSON: {e}")
         return {
@@ -181,29 +200,62 @@ async def process_challenge_feedback(
         # 1. 기준표 (Rubric) 캐시 로드
         criteria = await _get_rubric(knowledge_id) if knowledge_id else ""
 
-        # 2. 내 텍스트 조회
-        my_text = await _get_participant_text(job_id, attempt_id)
+        # 2. 내 참가자 데이터 조회 (userId + sttText)
+        my_data = await _get_participant_data(job_id, attempt_id)
+        my_text = my_data["sttText"]
+        my_user_id = my_data["userId"]
 
-        # 3. 피드백 생성 분기
+        # 3. 짧은 텍스트 검사 (PvP와 동일한 기권 방어 로직)
+        my_short = len(my_text.strip()) < MIN_TEXT_LENGTH
+
         if rank == 1:
-            # 1등: Solo 모드 피드백
-            logger.info(f"🥇 Generating SOLO feedback for rank 1 ({attempt_id})")
-            feedback = await _generate_solo_feedback(criteria, my_text)
+            # ── 1등: Solo 모드 피드백 ──
+            if my_short:
+                logger.info(
+                    f"⏭️ Rank 1 short text ({len(my_text.strip())} chars). "
+                    f"Returning hardcoded feedback for {attempt_id}"
+                )
+                feedback = _hardcoded_feedback(DRAW_MSG)
+            else:
+                logger.info(f"🥇 Generating SOLO feedback for rank 1 ({attempt_id})")
+                feedback = await _generate_solo_feedback(criteria, my_text)
         else:
-            # 2등 이하: PvP 모드 (1등과 비교)
-            top1_text = await _get_participant_text(job_id, top1_id)
-            logger.info(
-                f"🏅 Generating PvP feedback for rank {rank} ({attempt_id}) vs top1 ({top1_id})"
-            )
-            feedback = await _generate_pvp_feedback(
-                criteria, top1_text, my_text, top1_id, attempt_id
-            )
+            # ── 2등 이하: PvP 모드 (1등과 비교) ──
+            top1_data = await _get_participant_data(job_id, top1_id)
+            top1_text = top1_data["sttText"]
+            top1_short = len(top1_text.strip()) < MIN_TEXT_LENGTH
 
-        # 4. 결과 조립 및 Redis 저장
+            if top1_short:
+                # Case 1/3: 1등이 짧으면 비교 자체가 불가능 → 하드코딩
+                logger.info(
+                    f"⏭️ Top1 ({top1_id}) text too short ({len(top1_text.strip())} chars). "
+                    f"Cannot compare. Hardcoded feedback for {attempt_id}"
+                )
+                feedback = _hardcoded_feedback(DRAW_MSG)
+            elif my_short:
+                # Case 2: 나만 짧음 → 기권 처리 문구로 치환 후 LLM 비교
+                logger.info(
+                    f"⏭️ My text too short ({len(my_text.strip())} chars). "
+                    f"Replacing with forfeit placeholder for {attempt_id}"
+                )
+                my_text = FORFEIT_PLACEHOLDER
+                feedback = await _generate_pvp_feedback(
+                    criteria, top1_text, my_text, top1_id, attempt_id
+                )
+            else:
+                # Case 4: 둘 다 정상 길이 → 정상 PvP 비교
+                logger.info(
+                    f"🏅 Generating PvP feedback for rank {rank} ({attempt_id}) vs top1 ({top1_id})"
+                )
+                feedback = await _generate_pvp_feedback(
+                    criteria, top1_text, my_text, top1_id, attempt_id
+                )
+
+        # 4. 결과 조립 및 Redis 저장 (BE 명세에 맞는 구조)
         result = {
-            "attemptId": attempt_id,
+            "user_id": my_user_id,
             "rank": rank,
-            **feedback,
+            "feedback_json": json.dumps(feedback, ensure_ascii=False),
         }
         feedback_hash_key = f"challenge:{job_id}:feedbacks"
         await redis_client.hset(

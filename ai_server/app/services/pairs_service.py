@@ -7,10 +7,12 @@ Logprob + 위치 편향 보정 + Uncertainty-Guided Beam Search 를 수행합니
 
 import math
 import asyncio
+import json
 import logging
 from typing import List, Tuple, Optional
 from google import genai
 from google.genai import types
+from google.oauth2 import service_account
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 from app.core.config import settings
@@ -18,15 +20,32 @@ from app.core.prompts import CHALLENGE_PAIRS_SYSTEM_PROMPT, CHALLENGE_PAIRS_USER
 
 logger = logging.getLogger("imyme-pairs-service")
 
-# ── Vertex AI Client 초기화 ──
+# ── Vertex AI Client 초기화 (Parameter Store JSON 직접 읽기) ──
 try:
-    client = genai.Client(
-        vertexai=True,
-        project=settings.GCP_PROJECT,
-        location=settings.GCP_LOCATION,
-    )
+    gcp_json_str = settings.GCP_SA_JSON_STR
+    if gcp_json_str:
+        sa_info = json.loads(gcp_json_str)
+        credentials = service_account.Credentials.from_service_account_info(
+            sa_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT,
+            location=settings.GCP_LOCATION,
+            credentials=credentials,
+        )
+        logger.info(
+            "Successfully initialized Vertex AI client using Service Account JSON String."
+        )
+    else:
+        logger.info("GCP_SA_JSON_STR not found. Falling back to default ADC.")
+        client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT,
+            location=settings.GCP_LOCATION,
+        )
 except Exception as e:
-    logger.warning(f"Failed to initialize Vertex AI client: {e}")
+    logger.error(f"Failed to initialize Vertex AI client: {e}")
     client = genai.Client()
 
 RESPONSE_SCHEMA = {"type": "STRING", "enum": ["1", "2"]}
@@ -135,6 +154,36 @@ class PairsService:
         """위치 편향 보정된 쌍방향 비교. criteria가 있으면 지식 기반 비교."""
         text_a = item_a["text"]
         text_b = item_b["text"]
+
+        # ── 짧은 텍스트 / 무발화 즉시 패배 처리 (LLM 호출 없이 기권 패널티 적용) ──
+        MIN_TEXT_LENGTH = 5
+        NO_ANSWER_MARKER = "[NO_ANSWER]"
+        a_short = (
+            len(text_a.strip()) < MIN_TEXT_LENGTH or text_a.strip() == NO_ANSWER_MARKER
+        )
+        b_short = (
+            len(text_b.strip()) < MIN_TEXT_LENGTH or text_b.strip() == NO_ANSWER_MARKER
+        )
+
+        if a_short and b_short:
+            # 둘 다 짧음: A 승리 (임의 타이브레이크)
+            logger.info(
+                f"⏭️ Both texts too short for PAIRS compare (A={len(text_a.strip())}, B={len(text_b.strip())} chars). A wins by tiebreak."
+            )
+            return 1.0, 0.0, 0.0
+        if a_short:
+            # A만 짧음: B 무조건 승리
+            logger.info(
+                f"⏭️ Text A too short ({len(text_a.strip())} chars). B wins by forfeit in PAIRS."
+            )
+            return 0.0, 1.0, 0.0
+        if b_short:
+            # B만 짧음: A 무조건 승리
+            logger.info(
+                f"⏭️ Text B too short ({len(text_b.strip())} chars). A wins by forfeit in PAIRS."
+            )
+            return 1.0, 0.0, 0.0
+
         sys_prompt = self._get_system_prompt(criteria)
 
         # Prompt 1: A first, B second

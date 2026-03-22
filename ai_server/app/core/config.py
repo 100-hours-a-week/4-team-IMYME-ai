@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     GCP_PROJECT: str = ""
     GCP_LOCATION: str = ""
     PAIRS_MODEL_ID: str = ""
+    GCP_SA_JSON_STR: str = ""
 
     class Config:
         # Load settings from .env file if present

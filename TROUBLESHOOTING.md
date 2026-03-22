@@ -745,3 +745,155 @@ Merge Sort 알고리즘의 복잡도를 효율적으로 통제하기 위해, 아
 ### 25.4. 결과 및 효과 (Results)
 - 단 하나의 데드락 오류도 없이 5명, 7명, 99명 등 극한의 엣지 케이스부터 홀수 연쇄 폭발 상황까지 무한정 소화가 가능한 완전한 동적(Dynamic) 토너먼트 머신이 완성됨.
 - 각 레벨의 무결한 병합이 독립적인 MQ에서 병렬로 이루어짐으로써 최적의 O(N log N) 트리를 자율적으로 그려냄.
+
+
+## 26. Dev 환경 S3 Presigned URL 만료(403) — 환경 분리 미숙지 및 부하 테스트 충돌 [2026-03-20]
+
+### 26.1. 문제 상황 (Problem)
+- **증상**: Dev 서버의 STT 처리 전 단계에서 403 에러가 산발적으로 발생.
+  AI 서버 로그에는 타임스탬프가 없어 원인을 즉시 특정할 수 없었음.
+- **발견**: RunPod Serverless 대시보드에서 특정 인스턴스 1개가 계속 에러를 반복 출력하는 것을 확인. 해당 인스턴스 로그에는 타임스탬프와 함께 아래와 같은 에러가 찍혀 있었음.
+  ```
+  Transcription failed: Failed to download audio: 403 Client Error: Forbidden for url:
+  https://dev-imymemine.s3.../...?X-Amz-Expires=3600&X-Amz-Date=20260320T110430Z...
+  ```
+- **영향**: RabbitMQ 큐에 쌓인 **1,227개**의 STT 요청이 전량 만료된 Presigned URL로 재시도를 반복하는 상황이 발생.
+
+### 26.2. 원인 분석 (Root Cause)
+
+**복합 원인 2가지가 연속으로 충돌함:**
+
+1. **환경 공유에 대한 인지 미숙**:
+   - `prod`, `release`, `dev` 환경이 **서로 다른 EC2 인스턴스**지만, **RunPod Serverless 엔드포인트는 3개 환경이 동일한 것을 공유**하고 있었음.
+   - Cloud 팀원이 `release` 서버를 대상으로 대규모 부하 테스트를 진행하기로 했고, 관련 팀원이 승인을 줬으나 **RunPod이 공유된다는 사실을 인지하지 못한 채** 승인함.
+   - 부하 테스트로 release 서버에서 대량의 STT 요청이 발생 → RunPod 큐가 폭발적으로 적체됨.
+
+2. **Presigned URL 만료 (TTL 1시간)**:
+   - S3 Presigned URL의 유효기간이 `3600초(1시간)`으로 설정되어 있었음.
+   - 부하 테스트로 인한 적체로 메시지가 큐에서 **1시간 이상** 대기하다 처리되는 순간, URL이 이미 만료되어 RunPod의 S3 다운로드 요청이 403을 받게 됨.
+
+### 26.3. 해결 방법 (Solution)
+1. 팀 내 공유를 통해 상황을 파악하고, 부하 테스트를 즉시 중단.
+2. RabbitMQ에 적체된 **1,227개의 메시지를 Management UI에서 전량 Purge(삭제)** 처리.
+
+### 26.4. 재발 방지 (Prevention)
+- **환경별 RunPod 엔드포인트 분리** 필요. 최소한 부하 테스트 시에는 별도 엔드포인트를 사용해야 함.
+- AI 서버 로그에 **타임스탬프가 출력되도록 로깅 설정을 보강**하여, 다음에는 RunPod 대시보드를 먼저 보는 일을 줄일 수 있음.
+
+
+## 27. RabbitMQ prefetch_count=1 설정으로 인한 RunPod 단일 Worker 병목 [2026-03-20]
+
+### 27.1. 문제 상황 (Problem)
+- **증상**: 26번 인시던트 해결 과정에서, RunPod Serverless 대시보드를 보니 **6개의 Max Worker 설정에도 불구하고 항상 Worker 1개만 동작** 중인 것을 발견.
+- **기대**: 여러 유저가 동시에 STT를 요청하면 RunPod이 ALB를 통해 부하를 분산하여 최대 6개 Worker를 활용해야 함.
+- **현실**: 과거 REST API 방식일 때는 AI 서버가 동시에 여러 RunPod 요청을 날렸기 때문에 Worker가 여러 개 사용되었으나, **MQ 도입 이후 단 1개 Worker만 활용**되고 있었음.
+
+### 27.2. 원인 분석 (Root Cause)
+MQ 도입 시 `rabbitmq_service.py`에 **`prefetch_count=1`을 글로벌 채널 레벨로 적용**한 것이 원인이었음.
+
+`prefetch_count=1`의 의미는 "컨슈머가 현재 처리 중인 메시지를 완전히 Ack 하기 전까지는 절대 다음 메시지를 가져오지 말 것"으로, 이는 **완전한 순차(Sequential) 처리**를 의미함.
+
+결과적으로:
+```
+solo_stt_worker: msg1 처리 완료 (RunPod 1회 호출) → msg2 처리 완료 → msg3 처리 완료 ...
+               (한 번에 RunPod에 요청 1개만 → Worker 1개만 가동)
+```
+
+MQ 도입 당시 이 설정의 의미를 완전히 이해하지 못한 채 "안전하게 1개씩"이라는 의도로 적용했으나, 그 결과 6개 Serverless Worker 인프라를 사실상 낭비하고 있었음.
+
+### 27.3. 해결 방법 (Solution)
+글로벌 채널 레벨의 `prefetch_count=1` 설정을 **컨슈머 레벨의 per-consumer 방식으로 전환**하고, 수치를 `6`으로 상향 조정.
+
+```python
+# 수정 전: 채널 전체에 순차 처리 강제
+await self.channel.set_qos(prefetch_count=1)
+
+# 수정 후: 컨슈머 레벨에서 동시 6개 처리 허용 (부하 테스트 기준)
+prefetch = 6
+await queue.channel.set_qos(prefetch_count=prefetch)
+```
+
+이로써 각 STT 워커가 최대 6개의 메시지를 동시에 꺼내어 RunPod에 병렬 요청을 발생시키므로, RunPod ALB가 부하를 분산하여 최대 6개 Worker를 풀가동할 수 있게 됨.
+
+### 27.4. 교훈 (Lesson Learned)
+- **RabbitMQ prefetch_count는 단순한 배치 크기가 아니라, 인프라 병렬성을 결정하는 핵심 설정임**을 명심해야 함.
+- MQ 도입 시 "직전 아키텍처(REST API)에서 어떻게 동시성이 보장되었는지"를 먼저 파악하고, MQ 전환 후에도 동일한 동시성이 유지되는지 검증하는 단계가 반드시 필요함.
+- 실운영 시 `prefetch_count`는 RunPod `max_workers`와 STT 워커 수를 함께 고려하여 `ceil(max_workers / num_stt_workers)` 공식으로 산정하는 것을 권장함.
+
+## 28. 챌린지 모드 빈 배열(Empty Array) Truthiness 검증 버그 및 페이로드 기각 현상 [2026-03-22]
+
+### 28.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 큐(`challenge.pairs.eval`)에 정상적인 Payload 형태(`{target_count: 1, array_a: ["user1"], array_b: []}`)가 들어왔음에도 불구하고, AI 서버가 즉시 에러(`Invalid challenge merge payload`)를 뿜으며 처리를 튕겨냄 (Reject).
+- **영향**: 1인 플레이(참여자 1명)나, 홀수 인원으로 짝맞추기를 하다 마지막에 혼자 남은 유저 등 `PROMOTE`를 통해 부전승 승급 처리가 되어야 할 정상적인 데이터 흐름이 완전히 단절됨.
+
+### 28.2. 원인 분석 (Root Cause)
+`app/workers/challenge_worker.py` 내의 큐 메시지 Payload 검증(`Validation`) 구문의 설계 결함.
+
+```python
+# 기존 결함 코드
+if not all([job_id, level is not None, arr_a_ids, arr_b_ids]):
+    logger.error("Invalid challenge merge payload")
+```
+
+Python 언어의 **Truthiness(참/거짓 평가)** 특성에 의해, 빈 리스트(`[]`)는 조건문에서 암묵적으로 `False`로 취급됨. 따라서 짝꿍이 없는 홀수 케이스여서 `arr_b_ids` 필드에 정상적으로 빈 배열(`[]`)이 들어왔음에도 불구하고, 코드 검증문 전체가 거짓(`False`)으로 튕겨나가며 에러를 발생시킨 것.
+
+### 28.3. 해결 방법 (Solution)
+Python 내장 함수 `isinstance()`를 사용해 **"값이 비어있냐"가 아니라 "객체의 자료형이 리스트(List)가 맞느냐"**로 Truthiness 평가 방식을 전면 교체하여, 빈 배열도 안전하게 통과되도록 조치함.
+
+```python
+# 수정된 방어 코드
+if not all(
+    [
+        job_id is not None,
+        level is not None,
+        isinstance(arr_a_ids, list),  # 빈 배열 [] 도 True
+        isinstance(arr_b_ids, list),  # 빈 배열 [] 도 True
+    ]
+):
+```
+
+### 28.4. 교훈 (Lesson Learned)
+- Python에서 `if variable:` 과 같은 Truthiness 평가는 코드는 간결하게 만들지만, **0, "", [] 등 텅 빈 "정상 값(Falsy Value)"들까지 에러로 취급해버리는 엄청난 폭탄**이 될 수 있음.
+- 통신의 관문이 되는 Validation 로직에서는 반드시 `isinstance()`나 `is not None`처럼 엄격한 자료형(Type) 검사를 명시적으로 수행해야 우발적인 데이터 Drop을 막을 수 있음.
+
+## 29. 챌린지 모드 최종 피드백 JSON 구조(Payload) 스펙 불일치 오류 [2026-03-22]
+
+### 29.1. 문제 상황 (Problem)
+- **증상**: AI 챌린지 피드백 워커 로직과 Spring(백엔드) 서버 간의 Redis Hash(`challenge:{id}:feedbacks`) 적재 페이로드 스펙 불일치 및 속성명 누락 발생.
+- **상세**:
+  - 백엔드 기대 스펙: `{"user_id": 5, "rank": 1, "feedback_json": "{...}"}` (피드백 데이터가 통째로 Stringified JSON으로 묶인 형태)
+  - 기존 AI 서버 직렬화 스펙: `{"attemptId": 101, "rank": 1, "summary": "...", "keywords": [...]}` (개별 속성들이 모두 루트 레벨로 분산된 Spread 형태, user_id 누락)
+- **영향**: Spring 서버에서 HGET을 통해 최종 리더보드의 개인 피드백(My Page)을 렌더링할 때 역직렬화(Deserialization) 오류 또는 데이터 누락 발생.
+
+### 29.2. 원인 분석 (Root Cause)
+- 백엔드와 AI 간 챌린지 모드 최종 저장 단계에 대한 API/DB 협약(Spec)이 완벽히 동기화되지 않은 상태에서 각자 개발이 진행됨.
+- AI 워커는 참가자의 고유 식별자로 `attemptId`만 사용해 처리했으나 백엔드는 화면 렌더링에 `user_id`를 혼용하였고, 피드백 데이터를 단일 String 필드(`feedback_json`)로 매핑하려는 Java 엔티티 구조와 불일치함.
+
+### 29.3. 해결 방법 (Solution)
+- AI 단(`app/workers/challenge_feedback_worker.py`)에서 Redis에 적재하기 직전 데이터를 재조립하여 엄격한 백엔드 API 명세에 강제 정렬함.
+  1. `_get_participant_data()` 헬퍼 함수를 추상화하여, `participants` 해시에서 `sttText`뿐만 아니라 `userId` 필드를 같이 꺼내오도록 수정 (N+1 문제 없이 기존 로직 재활용).
+  2. Gemini가 산출한 딕셔너리(`feedback`)를 최상위에 Spread 하지 않고, `json.dumps()`를 통해 단일 문자열로 압축하여 `feedback_json` 키 안에 캡슐화.
+  3. JSON 최상단에 `user_id`, `rank` 필드만 선언하여 DTO 파싱 규격 통일.
+
+### 29.4. 교훈 (Lesson Learned)
+- 마이크로서비스(Spring ↔ Python Worker) 분리 환경에서는 **메시지 큐(MQ) 통신 포맷뿐만 아니라, 양쪽이 공유하는 Redis 스토리지의 입출력 JSON 직렬화 스키마(Schema)까지 완벽히 문서화하고 합의**해야 함.
+- TDD(단위 테스트)를 짤 때 역시, 내부 로직의 정상 동작 여부만 검증(`assert "summary" in parsed`)할 것이 아니라, 외부 인터페이스 스펙(계약, Contract) 자체를 Mock 데이터와 Asserion 코드에 반영하는 "계약 주도 테스트"가 필요함을 깨달음.
+
+## 30. Vertex AI 인증 오류 (Application Default Credentials Not Found) [2026-03-22]
+
+### 30.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 워커(`challenge.pairs.eval`) 실행 시, LLM 비교 호출 단계에서 `Your default credentials were not found` 에러가 발생하며 프로세스가 중단됨.
+- **영향**: PAIRS 알고리즘 기반의 지식 비교 연산이 불가능해져, 챌린지 랭킹 산출 전체 프로세스가 멈추는 치명적 장애 발생.
+
+### 30.2. 원인 분석 (Root Cause)
+- `app/services/pairs_service.py`에서 구글의 새로운 `google-genai` SDK를 사용하면서 `vertexai=True` 옵션을 활성화함.
+- **Vertex AI 모드**는 단순 API Key가 아닌 GCP의 **ADC(Application Default Credentials)** 인증 체계를 강제함. 배포 환경이나 로컬 환경에 `gcloud` 로그인 정보 또는 서비스 계정 키 파일(`JSON`)이 설정되어 있지 않아 인증에 실패함.
+
+### 30.3. 해결 방법 (Solution)
+- 일반적인 로컬 개발 환경이나 단순 배포 환경 편의성을 위해 API Key 방식으로도 대응 가능하나, **보안 정책상 Vertex AI를 필수 사용해야 하는 엔터프라이즈 환경**에서는 서비스 계정(Service Account)키 파일 연동이 제한될 수 있음 (컨테이너 내 키 파일 물리적 보관 금지 등).
+- 이를 해결하기 위해 AWS Parameter Store나 환경 변수에서 JSON 평문을 직접 통째로 문자열(`GCP_SA_JSON_STR`)로 긁어오도록 로직 아키텍처를 전면 개편함.
+- `app/services/pairs_service.py` 내의 클라이언트 초기화 로직에서 `service_account.Credentials.from_service_account_info(sa_info)`를 사용해, 물리적 파일 경로 지정(`GOOGLE_APPLICATION_CREDENTIALS`) 규제를 우회하고 메모리 상에서 즉석으로 ADC 인증을 통과시킴.
+
+### 30.4. 교훈 (Lesson Learned)
+- **Fileless 런타임 보안 아키텍처**: 클라우드 SDK 기본값은 주로 `File` 경로 접근을 유도하지만, 모던 컨테이너/클라우드 환경에서는 기밀 정보를 파일로 저장하는 것이 큰 안티패턴(Anti-pattern)이 될 수 있음.
+- 따라서 Google Cloud 라이브러리가 지원하는 메모리 인증 방식(`from_service_account_info`)을 적극 발굴/활용해, DevOps(CLOUD) 팀의 보안 기준을 충족하면서 파라미터 스토어와 완벽하게 연동되는 백엔드 시스템을 설계해야 함.

@@ -120,7 +120,7 @@ jobs:
 
       - name: Deploy AI Server
         run: |
-          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} 'bash -s' <<'EOF'
+          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} "REDIS_URL='${{ secrets.REDIS_URL_DEV }}' bash -s" <<'EOF'
           set -euo pipefail
 
           APP_ROOT=/home/ubuntu/mine/ai
@@ -153,6 +153,13 @@ jobs:
           if [ ! -f "$SHARED_DIR/.env" ]; then
             echo "❌ shared .env not found: $SHARED_DIR/.env"
             exit 1
+          fi
+
+          # GitHub Actions secret 기준으로 REDIS_URL 동기화
+          if grep -q '^REDIS_URL=' "$ENV_FILE"; then
+            sed -i "s|^REDIS_URL=.*|REDIS_URL=${REDIS_URL}|g" "$ENV_FILE"
+          else
+            echo "REDIS_URL=${REDIS_URL}" >> "$ENV_FILE"
           fi
 
           # 새 릴리즈 폴더에 코드 스냅샷 저장
