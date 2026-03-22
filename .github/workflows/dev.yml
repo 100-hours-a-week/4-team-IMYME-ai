@@ -21,6 +21,11 @@ concurrency:
   group: ai-cicd-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+  PAIRS_MODEL_ID: ${{ secrets.PAIRS_MODEL_ID }}
+
 jobs:
   # 1) CI
   ci:
@@ -120,7 +125,7 @@ jobs:
 
       - name: Deploy AI Server
         run: |
-          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} "REDIS_URL='${{ secrets.REDIS_URL_DEV }}' bash -s" <<'EOF'
+          ssh -i ~/.ssh/id_rsa ubuntu@${{ secrets.DEV_SERVER_HOST }} "REDIS_URL='${{ secrets.REDIS_URL_DEV }}' GCP_PROJECT='${GCP_PROJECT}' GCP_LOCATION='${GCP_LOCATION}' PAIRS_MODEL_ID='${PAIRS_MODEL_ID}' bash -s" <<'EOF'
           set -euo pipefail
 
           APP_ROOT=/home/ubuntu/mine/ai
@@ -160,6 +165,25 @@ jobs:
             sed -i "s|^REDIS_URL=.*|REDIS_URL=${REDIS_URL}|g" "$ENV_FILE"
           else
             echo "REDIS_URL=${REDIS_URL}" >> "$ENV_FILE"
+          fi
+
+          # GitHub Actions workflow 값 기준으로 GCP/PAIRS 설정 동기화
+          if grep -q '^GCP_PROJECT=' "$ENV_FILE"; then
+            sed -i "s|^GCP_PROJECT=.*|GCP_PROJECT=${GCP_PROJECT}|g" "$ENV_FILE"
+          else
+            echo "GCP_PROJECT=${GCP_PROJECT}" >> "$ENV_FILE"
+          fi
+
+          if grep -q '^GCP_LOCATION=' "$ENV_FILE"; then
+            sed -i "s|^GCP_LOCATION=.*|GCP_LOCATION=${GCP_LOCATION}|g" "$ENV_FILE"
+          else
+            echo "GCP_LOCATION=${GCP_LOCATION}" >> "$ENV_FILE"
+          fi
+
+          if grep -q '^PAIRS_MODEL_ID=' "$ENV_FILE"; then
+            sed -i "s|^PAIRS_MODEL_ID=.*|PAIRS_MODEL_ID=${PAIRS_MODEL_ID}|g" "$ENV_FILE"
+          else
+            echo "PAIRS_MODEL_ID=${PAIRS_MODEL_ID}" >> "$ENV_FILE"
           fi
 
           # 새 릴리즈 폴더에 코드 스냅샷 저장

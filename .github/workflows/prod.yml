@@ -21,6 +21,11 @@ concurrency:
   group: ai-ci-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+  PAIRS_MODEL_ID: ${{ secrets.PAIRS_MODEL_ID }}
+
 jobs:
   ci:
     runs-on: ubuntu-latest

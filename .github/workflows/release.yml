@@ -21,6 +21,11 @@ concurrency:
   group: ai-cicd-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+  PAIRS_MODEL_ID: ${{ secrets.PAIRS_MODEL_ID }}
+
 jobs:
   # 1) CI
   ci:
@@ -147,6 +152,9 @@ jobs:
               "echo '# ------------- RELEASE --------------' >> /home/ubuntu/.env",
               "aws ssm get-parameters-by-path --path '/MINE/MVP1/AI/ENV/RELEASE' --with-decryption --query 'Parameters[*].[Name,Value]' --output text --region ap-northeast-2 | while IFS=$(printf '\\t') read -r name value; do key=$(basename \"$name\"); echo \"$key=${value:-}\" >> /home/ubuntu/.env; done",
               "if grep -q '^REDIS_URL=' /home/ubuntu/.env; then sed -i \"s|^REDIS_URL=.*|REDIS_URL=${{ secrets.REDIS_URL_RELEASE }}|g\" /home/ubuntu/.env; else echo \"REDIS_URL=${{ secrets.REDIS_URL_RELEASE }}\" >> /home/ubuntu/.env; fi",
+              "if grep -q '^GCP_PROJECT=' /home/ubuntu/.env; then sed -i \"s|^GCP_PROJECT=.*|GCP_PROJECT=${GCP_PROJECT}|g\" /home/ubuntu/.env; else echo \"GCP_PROJECT=${GCP_PROJECT}\" >> /home/ubuntu/.env; fi",
+              "if grep -q '^GCP_LOCATION=' /home/ubuntu/.env; then sed -i \"s|^GCP_LOCATION=.*|GCP_LOCATION=${GCP_LOCATION}|g\" /home/ubuntu/.env; else echo \"GCP_LOCATION=${GCP_LOCATION}\" >> /home/ubuntu/.env; fi",
+              "if grep -q '^PAIRS_MODEL_ID=' /home/ubuntu/.env; then sed -i \"s|^PAIRS_MODEL_ID=.*|PAIRS_MODEL_ID=${PAIRS_MODEL_ID}|g\" /home/ubuntu/.env; else echo \"PAIRS_MODEL_ID=${PAIRS_MODEL_ID}\" >> /home/ubuntu/.env; fi",
               "IMAGE_URI=219268921033.dkr.ecr.ap-northeast-2.amazonaws.com/imyme-ai:release-latest",
               "docker pull $IMAGE_URI",
               "docker compose up -d",
