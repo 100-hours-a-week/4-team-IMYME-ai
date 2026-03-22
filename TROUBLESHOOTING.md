@@ -855,3 +855,26 @@ if not all(
 ### 28.4. 교훈 (Lesson Learned)
 - Python에서 `if variable:` 과 같은 Truthiness 평가는 코드는 간결하게 만들지만, **0, "", [] 등 텅 빈 "정상 값(Falsy Value)"들까지 에러로 취급해버리는 엄청난 폭탄**이 될 수 있음.
 - 통신의 관문이 되는 Validation 로직에서는 반드시 `isinstance()`나 `is not None`처럼 엄격한 자료형(Type) 검사를 명시적으로 수행해야 우발적인 데이터 Drop을 막을 수 있음.
+
+## 29. 챌린지 모드 최종 피드백 JSON 구조(Payload) 스펙 불일치 오류 [2026-03-22]
+
+### 29.1. 문제 상황 (Problem)
+- **증상**: AI 챌린지 피드백 워커 로직과 Spring(백엔드) 서버 간의 Redis Hash(`challenge:{id}:feedbacks`) 적재 페이로드 스펙 불일치 및 속성명 누락 발생.
+- **상세**:
+  - 백엔드 기대 스펙: `{"user_id": 5, "rank": 1, "feedback_json": "{...}"}` (피드백 데이터가 통째로 Stringified JSON으로 묶인 형태)
+  - 기존 AI 서버 직렬화 스펙: `{"attemptId": 101, "rank": 1, "summary": "...", "keywords": [...]}` (개별 속성들이 모두 루트 레벨로 분산된 Spread 형태, user_id 누락)
+- **영향**: Spring 서버에서 HGET을 통해 최종 리더보드의 개인 피드백(My Page)을 렌더링할 때 역직렬화(Deserialization) 오류 또는 데이터 누락 발생.
+
+### 29.2. 원인 분석 (Root Cause)
+- 백엔드와 AI 간 챌린지 모드 최종 저장 단계에 대한 API/DB 협약(Spec)이 완벽히 동기화되지 않은 상태에서 각자 개발이 진행됨.
+- AI 워커는 참가자의 고유 식별자로 `attemptId`만 사용해 처리했으나 백엔드는 화면 렌더링에 `user_id`를 혼용하였고, 피드백 데이터를 단일 String 필드(`feedback_json`)로 매핑하려는 Java 엔티티 구조와 불일치함.
+
+### 29.3. 해결 방법 (Solution)
+- AI 단(`app/workers/challenge_feedback_worker.py`)에서 Redis에 적재하기 직전 데이터를 재조립하여 엄격한 백엔드 API 명세에 강제 정렬함.
+  1. `_get_participant_data()` 헬퍼 함수를 추상화하여, `participants` 해시에서 `sttText`뿐만 아니라 `userId` 필드를 같이 꺼내오도록 수정 (N+1 문제 없이 기존 로직 재활용).
+  2. Gemini가 산출한 딕셔너리(`feedback`)를 최상위에 Spread 하지 않고, `json.dumps()`를 통해 단일 문자열로 압축하여 `feedback_json` 키 안에 캡슐화.
+  3. JSON 최상단에 `user_id`, `rank` 필드만 선언하여 DTO 파싱 규격 통일.
+
+### 29.4. 교훈 (Lesson Learned)
+- 마이크로서비스(Spring ↔ Python Worker) 분리 환경에서는 **메시지 큐(MQ) 통신 포맷뿐만 아니라, 양쪽이 공유하는 Redis 스토리지의 입출력 JSON 직렬화 스키마(Schema)까지 완벽히 문서화하고 합의**해야 함.
+- TDD(단위 테스트)를 짤 때 역시, 내부 로직의 정상 동작 여부만 검증(`assert "summary" in parsed`)할 것이 아니라, 외부 인터페이스 스펙(계약, Contract) 자체를 Mock 데이터와 Asserion 코드에 반영하는 "계약 주도 테스트"가 필요함을 깨달음.
