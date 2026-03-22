@@ -745,3 +745,113 @@ Merge Sort 알고리즘의 복잡도를 효율적으로 통제하기 위해, 아
 ### 25.4. 결과 및 효과 (Results)
 - 단 하나의 데드락 오류도 없이 5명, 7명, 99명 등 극한의 엣지 케이스부터 홀수 연쇄 폭발 상황까지 무한정 소화가 가능한 완전한 동적(Dynamic) 토너먼트 머신이 완성됨.
 - 각 레벨의 무결한 병합이 독립적인 MQ에서 병렬로 이루어짐으로써 최적의 O(N log N) 트리를 자율적으로 그려냄.
+
+
+## 26. Dev 환경 S3 Presigned URL 만료(403) — 환경 분리 미숙지 및 부하 테스트 충돌 [2026-03-20]
+
+### 26.1. 문제 상황 (Problem)
+- **증상**: Dev 서버의 STT 처리 전 단계에서 403 에러가 산발적으로 발생.
+  AI 서버 로그에는 타임스탬프가 없어 원인을 즉시 특정할 수 없었음.
+- **발견**: RunPod Serverless 대시보드에서 특정 인스턴스 1개가 계속 에러를 반복 출력하는 것을 확인. 해당 인스턴스 로그에는 타임스탬프와 함께 아래와 같은 에러가 찍혀 있었음.
+  ```
+  Transcription failed: Failed to download audio: 403 Client Error: Forbidden for url:
+  https://dev-imymemine.s3.../...?X-Amz-Expires=3600&X-Amz-Date=20260320T110430Z...
+  ```
+- **영향**: RabbitMQ 큐에 쌓인 **1,227개**의 STT 요청이 전량 만료된 Presigned URL로 재시도를 반복하는 상황이 발생.
+
+### 26.2. 원인 분석 (Root Cause)
+
+**복합 원인 2가지가 연속으로 충돌함:**
+
+1. **환경 공유에 대한 인지 미숙**:
+   - `prod`, `release`, `dev` 환경이 **서로 다른 EC2 인스턴스**지만, **RunPod Serverless 엔드포인트는 3개 환경이 동일한 것을 공유**하고 있었음.
+   - Cloud 팀원이 `release` 서버를 대상으로 대규모 부하 테스트를 진행하기로 했고, 관련 팀원이 승인을 줬으나 **RunPod이 공유된다는 사실을 인지하지 못한 채** 승인함.
+   - 부하 테스트로 release 서버에서 대량의 STT 요청이 발생 → RunPod 큐가 폭발적으로 적체됨.
+
+2. **Presigned URL 만료 (TTL 1시간)**:
+   - S3 Presigned URL의 유효기간이 `3600초(1시간)`으로 설정되어 있었음.
+   - 부하 테스트로 인한 적체로 메시지가 큐에서 **1시간 이상** 대기하다 처리되는 순간, URL이 이미 만료되어 RunPod의 S3 다운로드 요청이 403을 받게 됨.
+
+### 26.3. 해결 방법 (Solution)
+1. 팀 내 공유를 통해 상황을 파악하고, 부하 테스트를 즉시 중단.
+2. RabbitMQ에 적체된 **1,227개의 메시지를 Management UI에서 전량 Purge(삭제)** 처리.
+
+### 26.4. 재발 방지 (Prevention)
+- **환경별 RunPod 엔드포인트 분리** 필요. 최소한 부하 테스트 시에는 별도 엔드포인트를 사용해야 함.
+- AI 서버 로그에 **타임스탬프가 출력되도록 로깅 설정을 보강**하여, 다음에는 RunPod 대시보드를 먼저 보는 일을 줄일 수 있음.
+
+
+## 27. RabbitMQ prefetch_count=1 설정으로 인한 RunPod 단일 Worker 병목 [2026-03-20]
+
+### 27.1. 문제 상황 (Problem)
+- **증상**: 26번 인시던트 해결 과정에서, RunPod Serverless 대시보드를 보니 **6개의 Max Worker 설정에도 불구하고 항상 Worker 1개만 동작** 중인 것을 발견.
+- **기대**: 여러 유저가 동시에 STT를 요청하면 RunPod이 ALB를 통해 부하를 분산하여 최대 6개 Worker를 활용해야 함.
+- **현실**: 과거 REST API 방식일 때는 AI 서버가 동시에 여러 RunPod 요청을 날렸기 때문에 Worker가 여러 개 사용되었으나, **MQ 도입 이후 단 1개 Worker만 활용**되고 있었음.
+
+### 27.2. 원인 분석 (Root Cause)
+MQ 도입 시 `rabbitmq_service.py`에 **`prefetch_count=1`을 글로벌 채널 레벨로 적용**한 것이 원인이었음.
+
+`prefetch_count=1`의 의미는 "컨슈머가 현재 처리 중인 메시지를 완전히 Ack 하기 전까지는 절대 다음 메시지를 가져오지 말 것"으로, 이는 **완전한 순차(Sequential) 처리**를 의미함.
+
+결과적으로:
+```
+solo_stt_worker: msg1 처리 완료 (RunPod 1회 호출) → msg2 처리 완료 → msg3 처리 완료 ...
+               (한 번에 RunPod에 요청 1개만 → Worker 1개만 가동)
+```
+
+MQ 도입 당시 이 설정의 의미를 완전히 이해하지 못한 채 "안전하게 1개씩"이라는 의도로 적용했으나, 그 결과 6개 Serverless Worker 인프라를 사실상 낭비하고 있었음.
+
+### 27.3. 해결 방법 (Solution)
+글로벌 채널 레벨의 `prefetch_count=1` 설정을 **컨슈머 레벨의 per-consumer 방식으로 전환**하고, 수치를 `6`으로 상향 조정.
+
+```python
+# 수정 전: 채널 전체에 순차 처리 강제
+await self.channel.set_qos(prefetch_count=1)
+
+# 수정 후: 컨슈머 레벨에서 동시 6개 처리 허용 (부하 테스트 기준)
+prefetch = 6
+await queue.channel.set_qos(prefetch_count=prefetch)
+```
+
+이로써 각 STT 워커가 최대 6개의 메시지를 동시에 꺼내어 RunPod에 병렬 요청을 발생시키므로, RunPod ALB가 부하를 분산하여 최대 6개 Worker를 풀가동할 수 있게 됨.
+
+### 27.4. 교훈 (Lesson Learned)
+- **RabbitMQ prefetch_count는 단순한 배치 크기가 아니라, 인프라 병렬성을 결정하는 핵심 설정임**을 명심해야 함.
+- MQ 도입 시 "직전 아키텍처(REST API)에서 어떻게 동시성이 보장되었는지"를 먼저 파악하고, MQ 전환 후에도 동일한 동시성이 유지되는지 검증하는 단계가 반드시 필요함.
+- 실운영 시 `prefetch_count`는 RunPod `max_workers`와 STT 워커 수를 함께 고려하여 `ceil(max_workers / num_stt_workers)` 공식으로 산정하는 것을 권장함.
+
+## 28. 챌린지 모드 빈 배열(Empty Array) Truthiness 검증 버그 및 페이로드 기각 현상 [2026-03-22]
+
+### 28.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 큐(`challenge.pairs.eval`)에 정상적인 Payload 형태(`{target_count: 1, array_a: ["user1"], array_b: []}`)가 들어왔음에도 불구하고, AI 서버가 즉시 에러(`Invalid challenge merge payload`)를 뿜으며 처리를 튕겨냄 (Reject).
+- **영향**: 1인 플레이(참여자 1명)나, 홀수 인원으로 짝맞추기를 하다 마지막에 혼자 남은 유저 등 `PROMOTE`를 통해 부전승 승급 처리가 되어야 할 정상적인 데이터 흐름이 완전히 단절됨.
+
+### 28.2. 원인 분석 (Root Cause)
+`app/workers/challenge_worker.py` 내의 큐 메시지 Payload 검증(`Validation`) 구문의 설계 결함.
+
+```python
+# 기존 결함 코드
+if not all([job_id, level is not None, arr_a_ids, arr_b_ids]):
+    logger.error("Invalid challenge merge payload")
+```
+
+Python 언어의 **Truthiness(참/거짓 평가)** 특성에 의해, 빈 리스트(`[]`)는 조건문에서 암묵적으로 `False`로 취급됨. 따라서 짝꿍이 없는 홀수 케이스여서 `arr_b_ids` 필드에 정상적으로 빈 배열(`[]`)이 들어왔음에도 불구하고, 코드 검증문 전체가 거짓(`False`)으로 튕겨나가며 에러를 발생시킨 것.
+
+### 28.3. 해결 방법 (Solution)
+Python 내장 함수 `isinstance()`를 사용해 **"값이 비어있냐"가 아니라 "객체의 자료형이 리스트(List)가 맞느냐"**로 Truthiness 평가 방식을 전면 교체하여, 빈 배열도 안전하게 통과되도록 조치함.
+
+```python
+# 수정된 방어 코드
+if not all(
+    [
+        job_id is not None,
+        level is not None,
+        isinstance(arr_a_ids, list),  # 빈 배열 [] 도 True
+        isinstance(arr_b_ids, list),  # 빈 배열 [] 도 True
+    ]
+):
+```
+
+### 28.4. 교훈 (Lesson Learned)
+- Python에서 `if variable:` 과 같은 Truthiness 평가는 코드는 간결하게 만들지만, **0, "", [] 등 텅 빈 "정상 값(Falsy Value)"들까지 에러로 취급해버리는 엄청난 폭탄**이 될 수 있음.
+- 통신의 관문이 되는 Validation 로직에서는 반드시 `isinstance()`나 `is not None`처럼 엄격한 자료형(Type) 검사를 명시적으로 수행해야 우발적인 데이터 Drop을 막을 수 있음.

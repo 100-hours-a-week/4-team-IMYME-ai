@@ -112,7 +112,14 @@ async def process_challenge_merge(body: dict, message: AbstractIncomingMessage) 
     target_count = body.get("target_count", 100)
     expected_count = body.get("expected_count", 50)
 
-    if not all([job_id, level is not None, arr_a_ids, arr_b_ids]):
+    if not all(
+        [
+            job_id is not None,
+            level is not None,
+            isinstance(arr_a_ids, list),
+            isinstance(arr_b_ids, list),
+        ]
+    ):
         logger.error(f"Invalid challenge merge payload: {body}")
         return
 
