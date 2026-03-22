@@ -151,7 +151,10 @@ async def _generate_pvp_feedback(
             text = text.strip()
         parsed = json.loads(text)
         # user_B 부분만 추출하여 반환 (현재 유저 = user_B)
-        return parsed.get("user_B", parsed)
+        user_b = parsed.get("user_B", parsed)
+        user_b.pop("user_id", None)
+        user_b.pop("score", None)
+        return user_b
     except (json.JSONDecodeError, AttributeError) as e:
         logger.error(f"Failed to parse PvP feedback JSON: {e}")
         return {
