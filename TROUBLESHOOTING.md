@@ -878,3 +878,22 @@ if not all(
 ### 29.4. 교훈 (Lesson Learned)
 - 마이크로서비스(Spring ↔ Python Worker) 분리 환경에서는 **메시지 큐(MQ) 통신 포맷뿐만 아니라, 양쪽이 공유하는 Redis 스토리지의 입출력 JSON 직렬화 스키마(Schema)까지 완벽히 문서화하고 합의**해야 함.
 - TDD(단위 테스트)를 짤 때 역시, 내부 로직의 정상 동작 여부만 검증(`assert "summary" in parsed`)할 것이 아니라, 외부 인터페이스 스펙(계약, Contract) 자체를 Mock 데이터와 Asserion 코드에 반영하는 "계약 주도 테스트"가 필요함을 깨달음.
+
+## 30. Vertex AI 인증 오류 (Application Default Credentials Not Found) [2026-03-22]
+
+### 30.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 워커(`challenge.pairs.eval`) 실행 시, LLM 비교 호출 단계에서 `Your default credentials were not found` 에러가 발생하며 프로세스가 중단됨.
+- **영향**: PAIRS 알고리즘 기반의 지식 비교 연산이 불가능해져, 챌린지 랭킹 산출 전체 프로세스가 멈추는 치명적 장애 발생.
+
+### 30.2. 원인 분석 (Root Cause)
+- `app/services/pairs_service.py`에서 구글의 새로운 `google-genai` SDK를 사용하면서 `vertexai=True` 옵션을 활성화함.
+- **Vertex AI 모드**는 단순 API Key가 아닌 GCP의 **ADC(Application Default Credentials)** 인증 체계를 강제함. 배포 환경이나 로컬 환경에 `gcloud` 로그인 정보 또는 서비스 계정 키 파일(`JSON`)이 설정되어 있지 않아 인증에 실패함.
+
+### 30.3. 해결 방법 (Solution)
+- 일반적인 로컬 개발 환경이나 단순 배포 환경 편의성을 위해 API Key 방식으로도 대응 가능하나, **보안 정책상 Vertex AI를 필수 사용해야 하는 엔터프라이즈 환경**에서는 서비스 계정(Service Account)키 파일 연동이 제한될 수 있음 (컨테이너 내 키 파일 물리적 보관 금지 등).
+- 이를 해결하기 위해 AWS Parameter Store나 환경 변수에서 JSON 평문을 직접 통째로 문자열(`GCP_SA_JSON_STR`)로 긁어오도록 로직 아키텍처를 전면 개편함.
+- `app/services/pairs_service.py` 내의 클라이언트 초기화 로직에서 `service_account.Credentials.from_service_account_info(sa_info)`를 사용해, 물리적 파일 경로 지정(`GOOGLE_APPLICATION_CREDENTIALS`) 규제를 우회하고 메모리 상에서 즉석으로 ADC 인증을 통과시킴.
+
+### 30.4. 교훈 (Lesson Learned)
+- **Fileless 런타임 보안 아키텍처**: 클라우드 SDK 기본값은 주로 `File` 경로 접근을 유도하지만, 모던 컨테이너/클라우드 환경에서는 기밀 정보를 파일로 저장하는 것이 큰 안티패턴(Anti-pattern)이 될 수 있음.
+- 따라서 Google Cloud 라이브러리가 지원하는 메모리 인증 방식(`from_service_account_info`)을 적극 발굴/활용해, DevOps(CLOUD) 팀의 보안 기준을 충족하면서 파라미터 스토어와 완벽하게 연동되는 백엔드 시스템을 설계해야 함.
