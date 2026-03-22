@@ -155,17 +155,22 @@ class PairsService:
         text_a = item_a["text"]
         text_b = item_b["text"]
 
-        # ── 짧은 텍스트 즉시 패배 처리 (LLM 호출 없이 기권 패널티 적용) ──
+        # ── 짧은 텍스트 / 무발화 즉시 패배 처리 (LLM 호출 없이 기권 패널티 적용) ──
         MIN_TEXT_LENGTH = 5
-        a_short = len(text_a.strip()) < MIN_TEXT_LENGTH
-        b_short = len(text_b.strip()) < MIN_TEXT_LENGTH
+        NO_ANSWER_MARKER = "[NO_ANSWER]"
+        a_short = (
+            len(text_a.strip()) < MIN_TEXT_LENGTH or text_a.strip() == NO_ANSWER_MARKER
+        )
+        b_short = (
+            len(text_b.strip()) < MIN_TEXT_LENGTH or text_b.strip() == NO_ANSWER_MARKER
+        )
 
         if a_short and b_short:
-            # 둘 다 짧음: 무승부 (0.5, 0.5), entropy=0 (확정)
+            # 둘 다 짧음: A 승리 (임의 타이브레이크)
             logger.info(
-                f"⏭️ Both texts too short for PAIRS compare (A={len(text_a.strip())}, B={len(text_b.strip())} chars). Treating as draw."
+                f"⏭️ Both texts too short for PAIRS compare (A={len(text_a.strip())}, B={len(text_b.strip())} chars). A wins by tiebreak."
             )
-            return 0.5, 0.5, 0.0
+            return 1.0, 0.0, 0.0
         if a_short:
             # A만 짧음: B 무조건 승리
             logger.info(

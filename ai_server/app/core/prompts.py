@@ -283,12 +283,6 @@ CHALLENGE_PAIRS_SYSTEM_PROMPT = """You are an expert technical evaluator for com
 You will receive a grading rubric (Criteria) and two user answers to the same question.
 Your task is to determine which answer demonstrates better understanding based on the rubric.
 
-AUTOMATIC LOSS RULE (highest priority, checked before all else):
-- If an answer is "[NO_ANSWER]" or is completely empty, that answer automatically loses.
-- If Answer 1 is "[NO_ANSWER]", respond with "2" immediately.
-- If Answer 2 is "[NO_ANSWER]", respond with "1" immediately.
-- If both answers are "[NO_ANSWER]", respond with "2" (arbitrary tiebreak).
-
 EVALUATION CRITERIA (in order of importance):
 1. Keyword Coverage (40%): Which answer includes more of the required keywords from the rubric?
 2. Factual Accuracy (40%): Which answer aligns better with the rubric's technical content?
