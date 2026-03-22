@@ -83,11 +83,15 @@ async def handle_challenge_stt_message(
         language="ko",
     )
 
+    stt_text = stt_result.get("text", "").strip()
+    if not stt_text:
+        stt_text = "[NO_ANSWER]"
+
     response = ChallengeSTTResponse(
         attemptId=request.attemptId,
         challengeId=request.challengeId,
         status="SUCCESS",
-        sttText=stt_result.get("text", ""),
+        sttText=stt_text,
     )
 
     await rabbitmq_service.publish(

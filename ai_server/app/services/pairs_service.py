@@ -154,6 +154,36 @@ class PairsService:
         """위치 편향 보정된 쌍방향 비교. criteria가 있으면 지식 기반 비교."""
         text_a = item_a["text"]
         text_b = item_b["text"]
+
+        # ── 짧은 텍스트 / 무발화 즉시 패배 처리 (LLM 호출 없이 기권 패널티 적용) ──
+        MIN_TEXT_LENGTH = 5
+        NO_ANSWER_MARKER = "[NO_ANSWER]"
+        a_short = (
+            len(text_a.strip()) < MIN_TEXT_LENGTH or text_a.strip() == NO_ANSWER_MARKER
+        )
+        b_short = (
+            len(text_b.strip()) < MIN_TEXT_LENGTH or text_b.strip() == NO_ANSWER_MARKER
+        )
+
+        if a_short and b_short:
+            # 둘 다 짧음: A 승리 (임의 타이브레이크)
+            logger.info(
+                f"⏭️ Both texts too short for PAIRS compare (A={len(text_a.strip())}, B={len(text_b.strip())} chars). A wins by tiebreak."
+            )
+            return 1.0, 0.0, 0.0
+        if a_short:
+            # A만 짧음: B 무조건 승리
+            logger.info(
+                f"⏭️ Text A too short ({len(text_a.strip())} chars). B wins by forfeit in PAIRS."
+            )
+            return 0.0, 1.0, 0.0
+        if b_short:
+            # B만 짧음: A 무조건 승리
+            logger.info(
+                f"⏭️ Text B too short ({len(text_b.strip())} chars). A wins by forfeit in PAIRS."
+            )
+            return 1.0, 0.0, 0.0
+
         sys_prompt = self._get_system_prompt(criteria)
 
         # Prompt 1: A first, B second
