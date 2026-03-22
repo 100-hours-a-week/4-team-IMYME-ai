@@ -7,10 +7,12 @@ Logprob + 위치 편향 보정 + Uncertainty-Guided Beam Search 를 수행합니
 
 import math
 import asyncio
+import json
 import logging
 from typing import List, Tuple, Optional
 from google import genai
 from google.genai import types
+from google.oauth2 import service_account
 from tenacity import retry, wait_exponential, stop_after_attempt
 
 from app.core.config import settings
@@ -18,15 +20,32 @@ from app.core.prompts import CHALLENGE_PAIRS_SYSTEM_PROMPT, CHALLENGE_PAIRS_USER
 
 logger = logging.getLogger("imyme-pairs-service")
 
-# ── Vertex AI Client 초기화 ──
+# ── Vertex AI Client 초기화 (Parameter Store JSON 직접 읽기) ──
 try:
-    client = genai.Client(
-        vertexai=True,
-        project=settings.GCP_PROJECT,
-        location=settings.GCP_LOCATION,
-    )
+    gcp_json_str = settings.GCP_SA_JSON_STR
+    if gcp_json_str:
+        sa_info = json.loads(gcp_json_str)
+        credentials = service_account.Credentials.from_service_account_info(
+            sa_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT,
+            location=settings.GCP_LOCATION,
+            credentials=credentials,
+        )
+        logger.info(
+            "Successfully initialized Vertex AI client using Service Account JSON String."
+        )
+    else:
+        logger.info("GCP_SA_JSON_STR not found. Falling back to default ADC.")
+        client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT,
+            location=settings.GCP_LOCATION,
+        )
 except Exception as e:
-    logger.warning(f"Failed to initialize Vertex AI client: {e}")
+    logger.error(f"Failed to initialize Vertex AI client: {e}")
     client = genai.Client()
 
 RESPONSE_SCHEMA = {"type": "STRING", "enum": ["1", "2"]}
