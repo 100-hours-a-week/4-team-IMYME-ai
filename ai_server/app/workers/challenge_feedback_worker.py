@@ -56,18 +56,18 @@ async def _get_rubric(knowledge_id: str) -> str:
     return rubric_text
 
 
-async def _get_participant_text(job_id: str, attempt_id: str) -> str:
-    """Redis Hash에서 특정 참가자의 STT 텍스트를 조회합니다."""
+async def _get_participant_data(job_id: str, attempt_id: str) -> dict:
+    """Redis Hash에서 특정 참가자의 전체 데이터(userId, sttText)를 조회합니다."""
     hash_key = f"challenge:{job_id}:participants"
     raw = await redis_client.hget(hash_key, attempt_id)
     if raw is None:
-        return ""
+        return {"userId": None, "sttText": ""}
     decoded = raw.decode("utf-8") if isinstance(raw, bytes) else raw
     try:
         parsed = json.loads(decoded)
-        return parsed.get("sttText", "")
+        return {"userId": parsed.get("userId"), "sttText": parsed.get("sttText", "")}
     except json.JSONDecodeError:
-        return decoded
+        return {"userId": None, "sttText": decoded}
 
 
 async def _generate_solo_feedback(criteria: str, user_text: str) -> dict:
@@ -181,8 +181,10 @@ async def process_challenge_feedback(
         # 1. 기준표 (Rubric) 캐시 로드
         criteria = await _get_rubric(knowledge_id) if knowledge_id else ""
 
-        # 2. 내 텍스트 조회
-        my_text = await _get_participant_text(job_id, attempt_id)
+        # 2. 내 참가자 데이터 조회 (userId + sttText)
+        my_data = await _get_participant_data(job_id, attempt_id)
+        my_text = my_data["sttText"]
+        my_user_id = my_data["userId"]
 
         # 3. 피드백 생성 분기
         if rank == 1:
@@ -191,7 +193,8 @@ async def process_challenge_feedback(
             feedback = await _generate_solo_feedback(criteria, my_text)
         else:
             # 2등 이하: PvP 모드 (1등과 비교)
-            top1_text = await _get_participant_text(job_id, top1_id)
+            top1_data = await _get_participant_data(job_id, top1_id)
+            top1_text = top1_data["sttText"]
             logger.info(
                 f"🏅 Generating PvP feedback for rank {rank} ({attempt_id}) vs top1 ({top1_id})"
             )
@@ -199,11 +202,11 @@ async def process_challenge_feedback(
                 criteria, top1_text, my_text, top1_id, attempt_id
             )
 
-        # 4. 결과 조립 및 Redis 저장
+        # 4. 결과 조립 및 Redis 저장 (BE 명세에 맞는 구조)
         result = {
-            "attemptId": attempt_id,
+            "user_id": my_user_id,
             "rank": rank,
-            **feedback,
+            "feedback_json": json.dumps(feedback, ensure_ascii=False),
         }
         feedback_hash_key = f"challenge:{job_id}:feedbacks"
         await redis_client.hset(
