@@ -102,11 +102,14 @@ class PairsService:
         )
 
         async with self.api_semaphore:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=settings.PAIRS_MODEL_ID,
-                contents=prompt,
-                config=config,
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.PAIRS_MODEL_ID,
+                    contents=prompt,
+                    config=config,
+                ),
+                timeout=20.0,
             )
 
         logprobs_data = []

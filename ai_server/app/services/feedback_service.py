@@ -1,3 +1,4 @@
+import asyncio
 import google.generativeai as genai
 from app.core.config import settings
 import json
@@ -30,7 +31,10 @@ class FeedbackService:
                 criteria=criteria, user_text=user_text, history=history
             )
 
-            response = await self.model.generate_content_async(prompt)
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=60.0,
+            )
 
             cleaned_text = (
                 response.text.replace("```json", "").replace("```", "").strip()
