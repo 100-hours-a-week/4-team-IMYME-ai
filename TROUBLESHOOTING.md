@@ -897,3 +897,229 @@ if not all(
 ### 30.4. 교훈 (Lesson Learned)
 - **Fileless 런타임 보안 아키텍처**: 클라우드 SDK 기본값은 주로 `File` 경로 접근을 유도하지만, 모던 컨테이너/클라우드 환경에서는 기밀 정보를 파일로 저장하는 것이 큰 안티패턴(Anti-pattern)이 될 수 있음.
 - 따라서 Google Cloud 라이브러리가 지원하는 메모리 인증 방식(`from_service_account_info`)을 적극 발굴/활용해, DevOps(CLOUD) 팀의 보안 기준을 충족하면서 파라미터 스토어와 완벽하게 연동되는 백엔드 시스템을 설계해야 함.
+
+---
+
+## 31. 챌린지 모드 무발화 유저 승리 버그 [2026-03-23]
+
+### 31.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드에서 음성을 녹음하지 않은 유저(무발화)가 PAIRS 토너먼트 비교에서 이기는 현상 발생.
+- **원인**: STT 결과가 빈 문자열(`""`)로 반환되었을 때 별도 처리 없이 PAIRS 비교로 넘어가, LLM이 빈 텍스트를 어떤 기준으로 채점하느냐에 따라 승패가 결정되었음.
+
+### 31.2. 해결 방법 (Solution)
+**2단계 처리 구조로 무발화를 조기에 차단함.**
+
+1. **STT 워커 단계 (`app/workers/challenge_stt_worker.py`)**: STT 결과 텍스트가 빈 문자열이거나 공백만 있으면 `[NO_ANSWER]` 마커로 치환하여 RabbitMQ에 발행.
+   ```python
+   stt_text = stt_result.get("text", "").strip()
+   if not stt_text:
+       stt_text = "[NO_ANSWER]"
+   ```
+
+2. **PAIRS 서비스 단계 (`app/services/pairs_service.py`)**: `compare_pair()` 호출 시 텍스트가 `[NO_ANSWER]`이거나 5자 미만이면 LLM 호출 없이 즉시 패배 처리.
+   ```python
+   MIN_TEXT_LENGTH = 5
+   NO_ANSWER_MARKER = "[NO_ANSWER]"
+   a_short = len(text_a.strip()) < MIN_TEXT_LENGTH or text_a.strip() == NO_ANSWER_MARKER
+   b_short = len(text_b.strip()) < MIN_TEXT_LENGTH or text_b.strip() == NO_ANSWER_MARKER
+   if a_short and b_short:
+       return 1.0, 0.0, 0.0  # 둘 다 무효 → A 타이브레이크 승리
+   if a_short:
+       return 0.0, 1.0, 0.0  # A 무효 → B 승리
+   if b_short:
+       return 1.0, 0.0, 0.0  # B 무효 → A 승리
+   ```
+
+### 31.3. 교훈 (Lesson Learned)
+- 프롬프트와 백엔드 로직 양쪽에 동일한 예외 처리 규칙을 두면 관리 포인트가 분산되어 일관성이 깨짐. **단일 진실 원천(Single Source of Truth)** 원칙에 따라 백엔드 코드에서만 처리하고 프롬프트에서는 제거.
+
+---
+
+## 32. 챌린지 피드백 JSON 포맷 불일치 (Rank 1 vs Rank 2+) [2026-03-23]
+
+### 32.1. 문제 상황 (Problem)
+- **증상**: PAIRS 병합 결과를 Redis에 적재할 때 1등과 2등 이하의 피드백 JSON 구조가 다름. 2등 이하 데이터에 `user_id`, `score` 등 불필요한 필드가 포함되어 BE 파싱 오류 발생 가능.
+- **기대 포맷** (모든 랭크 공통):
+  ```json
+  {
+    "user_id": 5,
+    "rank": 1,
+    "feedback_json": { "summary", "keywords", "facts", "understanding", "personalized_feedback" }
+  }
+  ```
+
+### 32.2. 해결 방법 (Solution)
+`app/workers/challenge_feedback_worker.py`의 `_generate_pvp_feedback()` 내부에서 Gemini 응답 딕셔너리에 포함된 불필요 필드를 제거:
+```python
+user_b = parsed.get("user_B", parsed)
+user_b.pop("user_id", None)
+user_b.pop("score", None)
+return user_b
+```
+
+---
+
+## 33. AWS SSM CD 파이프라인 연쇄 장애: `--output text` + 이중 이스케이프 [2026-03-23]
+
+### 33.1. 문제 상황 (Problem)
+- **1차 증상**: CD 파이프라인에서 SSM Parameter Store의 값을 `.env` 파일로 내보내는 과정에서 `line 4: unexpected character "/"` 에러 발생 → `docker-compose` 컨테이너 기동 불가.
+- **2차 증상** (1차 수동 패치 후): Vertex AI 클라이언트 초기화 실패 — `Unable to load PEM file. InvalidData(InvalidByte(0, 92))` — challenge.pairs.eval 큐 메시지가 영구 unacked 상태로 잔류.
+
+### 33.2. 원인 분석 (Root Cause)
+
+**1차: `--output text`가 `\n`을 실제 줄바꿈으로 변환**
+```bash
+# 기존 CD 스크립트
+aws ssm get-parameters-by-path ... --output text | while IFS=$(printf '\t') read -r name value
+```
+- `--output text`는 SSM 값의 `\n` (2글자 리터럴)을 실제 줄바꿈으로 출력함.
+- `read -r`은 한 번에 한 줄만 읽으므로 `GCP_SA_JSON_STR`의 private key가 여러 줄로 쪼개져 `.env`에 기록됨.
+- `docker-compose`는 multiline `.env` 값을 지원하지 않아 파싱 실패.
+
+**2차: 수동 패치 시 이중 이스케이프 발생**
+- 1차 문제 해결을 위해 SSM 파라미터의 `\n`을 `\\n`으로 수동 치환했으나, 이로 인해 `json.loads()` 파싱 후 private key가 실제 줄바꿈이 아닌 `\n` 리터럴(백슬래시 + n)로 남게 됨.
+- `service_account.Credentials.from_service_account_info()` 호출 시 PEM 파서가 `\` (byte 92)를 만나 `InvalidByte(0, 92)` 에러 발생.
+- Vertex AI 클라이언트 미초기화 → `generate_content` 호출 시 타임아웃 없이 영구 blocking → 메시지 unacked 고착.
+
+### 33.3. 해결 방법 (Solution)
+
+**Step 1: SSM 파라미터 올바른 값으로 재저장**
+
+`\n`이 단일 백슬래시 + n인 올바른 single-line JSON으로 저장:
+```bash
+# 로컬에서 SA JSON 파일을 올바르게 직렬화
+aws ssm put-parameter \
+  --name "/MINE/MVP1/AI/ENV/COMMON/GCP_SA_JSON_STR" \
+  --value "$(python3 -c "import json; print(json.dumps(json.load(open('gen-lang-client-xxx.json'))))")" \
+  --type "SecureString" \
+  --overwrite \
+  --region ap-northeast-2
+```
+
+**Step 2: CD 스크립트를 `--output json` + `jq`로 교체**
+
+```bash
+# 수정 전 (문제)
+aws ssm get-parameters-by-path ... --output text | while IFS=$(printf '\t') read -r name value; do
+  echo "$key=${value:-}" >> /home/ubuntu/.env
+done
+
+# 수정 후 (정상)
+aws ssm get-parameters-by-path ... --output json | \
+  jq -r '.Parameters[] | ((.Name | split("/") | last) + "=" + .Value)' >> /home/ubuntu/.env
+```
+- `--output json` → Python `jq`가 파싱 → `.Value`는 디코딩된 순수 문자열로 `.env`에 기록됨.
+- `\n` (JSON escape)이 실제 줄바꿈으로 변환되지 않고 2글자 리터럴 그대로 유지.
+- 컨테이너 내부에서 `json.loads(gcp_json_str)` 시 `\n` → 실제 줄바꿈으로 올바르게 변환됨.
+
+### 33.4. 이스케이프 흐름 정리
+
+```
+SA JSON 파일            python3 json.dumps()    SSM 저장값
+"private_key":          →  "private_key":       →  "private_key":
+"-----BEGIN\n           →  "-----BEGIN\\n       →  "-----BEGIN\n
+ MIIEvQ..."                MIIEvQ..."              MIIEvQ..."
+ (실제 줄바꿈)             (JSON 이스케이프)        (2글자: \+n)
+
+  ↓ jq -r 출력                ↓ .env 기록           ↓ json.loads()
+"private_key": "\n..."  →  GCP_SA=..."\n"...   →  실제 줄바꿈 ✅
+```
+
+### 33.5. 교훈 (Lesson Learned)
+- `aws ... --output text`는 JSON 이스케이프 시퀀스를 실제 문자로 변환하므로, multiline이 될 수 있는 값을 포함할 때 반드시 `--output json` + `jq` 또는 Python으로 처리해야 함.
+- 수동 패치(`\n` → `\\n` 치환)는 근본 원인을 해결하지 않고 새로운 이중 이스케이프 버그를 유발함. **수동 패치 후 반드시 전체 파이프라인 검증 필요**.
+
+---
+
+## 34. ElastiCache TLS 불일치로 인한 Redis 무한 Hanging [2026-03-23]
+
+### 34.1. 현상 (Symptom)
+
+- Release 서버에서 Challenge Merge Worker가 아래 로그 이후 무한 대기:
+  ```
+  INFO:imyme-challenge-worker:Merge Worker started for {job_id} at Level 0. Merging 1 vs 1 (target=5)
+  ```
+- RabbitMQ 관리 콘솔에서 메시지가 `Unacked` 상태로 고착.
+- Dev 서버에서는 동일한 코드가 정상 동작.
+
+### 34.2. 원인 (Root Cause)
+
+**ElastiCache In-Transit Encryption(TLS) 활성화 상태에서 `redis://`(non-TLS)로 연결 시도.**
+
+```
+AI 서버 (redis://)              ElastiCache (TLS 요구)
+     |                                  |
+     |── TCP 연결 요청 ────────────────>|  ← TCP 3-way handshake 성공 (포트 6379 열림)
+     |<─ TCP 연결 완료 ────────────────|
+     |                                  |
+     |── "PING\r\n" 평문 전송 ─────────>|  ← 서버는 TLS handshake를 기다리는 중
+     |                                  |  ← 평문 수신 → 무응답 (묵묵부답)
+     |  (socket_timeout 없음 → 무한 대기)|
+```
+
+- TCP 연결은 성공하므로 연결 에러가 발생하지 않음.
+- Redis 프로토콜 레벨에서 서버가 응답하지 않아 무한 blocking.
+- 기존 코드에 `socket_timeout`이 없어 에러 로그조차 남지 않았음.
+
+**Dev 서버와의 차이:** Dev 서버는 TLS가 비활성화된 Redis를 사용하므로 `redis://`로 정상 연결 가능.
+
+### 34.3. 진단 과정 (Diagnosis)
+
+**Step 1: socket_timeout 추가 후 에러 확인**
+
+`socket_connect_timeout=10, socket_timeout=10`을 Redis 클라이언트에 추가하여 10초 후 에러 발생 확인:
+```
+PING FAILED: Timeout reading from release-redis-001.release-redis.pny9nl.apn2.cache.amazonaws.com:6379
+```
+
+**Step 2: TLS 연결 테스트**
+
+```python
+tls_url = url.replace('redis://', 'rediss://', 1)
+r = await aioredis.from_url(tls_url, ssl_cert_reqs=None)
+await r.ping()  # → TLS PING OK: True
+```
+`rediss://`로 변경 시 즉시 PING 성공 → TLS 불일치가 원인임을 확인.
+
+### 34.4. 해결 방법 (Solution)
+
+**SSM Parameter Store에서 `REDIS_URL_RELEASE` 값 수정:**
+
+```bash
+# redis:// → rediss:// 로 변경
+aws ssm put-parameter \
+  --name "/MINE/MVP1/AI/ENV/RELEASE/REDIS_URL" \
+  --value "rediss://:비밀번호@{엔드포인트}:6379" \
+  --type "SecureString" \
+  --overwrite \
+  --region ap-northeast-2
+```
+
+**참고:** CD 스크립트의 `REDIS_URL` 덮어쓰기 라인도 확인 필요:
+```bash
+# release.yml CD 스크립트
+if grep -q '^REDIS_URL=' /home/ubuntu/.env; then
+  sed -i "s|^REDIS_URL=.*|REDIS_URL=${{ secrets.REDIS_URL_RELEASE }}|g" /home/ubuntu/.env
+```
+SSM에 저장 후 GitHub Secret `REDIS_URL_RELEASE`도 동일하게 `rediss://`로 업데이트해야 이 라인이 올바르게 덮어씀.
+
+### 34.5. 추가 조치: 외부 API 호출 Timeout 전면 적용
+
+Redis hanging을 계기로 전체 외부 API 호출에 timeout이 없는 지점을 모두 수정:
+
+| 파일 | 수정 내용 |
+|---|---|
+| `challenge_worker.py` | Redis `socket_connect_timeout=10s, socket_timeout=10s` |
+| `challenge_feedback_worker.py` | Redis 타임아웃 + Gemini `wait_for(60s)` |
+| `pairs_service.py` | Vertex AI `asyncio.wait_for(20s)` |
+| `feedback_service.py` | Gemini `wait_for(60s)` |
+| `scoring_service.py` | Gemini `wait_for(45s)` |
+| `pvp_feedback_service.py` | tenacity 제거 + Gemini `wait_for(60s)` |
+
+`pvp_feedback_service`의 tenacity는 RabbitMQ retry(3회)와 중복 적용되어 최악의 경우 **10분 대기** 후 FAIL을 유발했으므로 제거하고 RabbitMQ retry에 위임.
+
+### 34.6. 교훈 (Lesson Learned)
+- AWS ElastiCache 생성 시 **In-Transit Encryption(TLS)이 기본값 Enabled**. `redis://` 대신 `rediss://`를 사용해야 함.
+- `socket_timeout` 부재 시 TLS 불일치 같은 연결 이상이 **에러 로그 없이 무한 hanging**으로 나타남. 모든 외부 I/O에 반드시 timeout을 설정할 것.
+- timeout은 단순히 에러를 내는 것 이상으로, **문제를 가시화하는 디버깅 도구** 역할을 함.
+- Vertex AI 클라이언트 초기화 실패가 로그에 남지 않을 수 있음 (모듈 임포트 시점에 로깅 핸들러가 미설정 상태). 초기화 오류 추적은 `docker logs` 직접 확인 필요.
