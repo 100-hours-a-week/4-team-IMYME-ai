@@ -220,10 +220,12 @@ async def _handle_promote(
 ):
     """
     부전승 노드를 상위 레벨로 올립니다. 재귀 대신 이터레이션으로 구현하여
+
     무한 루프를 방지합니다.
 
     expected_count는 BE 값에 의존하지 않고 ceil(target_count / 2^level)로 직접 계산합니다.
     max_level = ceil(log2(N)): 이 레벨을 초과하면 토너먼트 루트에 도달한 것으로 완료 처리합니다.
+
     """
     max_level = math.ceil(math.log2(max(target_count, 2)))
 
@@ -245,7 +247,9 @@ async def _handle_promote(
             await _handle_ranking_complete(job_id, knowledge_id, ids, target_count)
             return
 
+
         upper_expected = math.ceil(target_count / (2**upper_level))
+
         list_key = f"pairs:{job_id}:level:{upper_level}"
         arrived_key = f"pairs:{job_id}:level:{upper_level}:arrived"
         serialized = json.dumps(ids, ensure_ascii=False)
