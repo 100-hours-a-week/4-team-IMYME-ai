@@ -60,7 +60,7 @@ class RedisLuaScripts:
             local p1 = redis.call('LPOP', list_key)
             local p2 = redis.call('LPOP', list_key)
             return {"PAIR", p1, p2}
-        elseif arrived == expected_count and list_len == 1 then
+        elseif arrived >= expected_count and list_len == 1 then
             -- 이 레벨의 마지막 노드인데 짝이 없음 -> 부전승(Promote)
             local lone = redis.call('LPOP', list_key)
             return {"PROMOTE", lone}

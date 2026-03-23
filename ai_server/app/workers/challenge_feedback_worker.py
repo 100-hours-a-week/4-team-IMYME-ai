@@ -7,6 +7,7 @@ AI_FEEDBACK_QUEUE 에서 개별 피드백 생성 작업을 소비합니다.
 - 생성된 결과를 challenge:{id}:feedbacks Hash에 HSET으로 저장
 """
 
+import asyncio
 import json
 import random
 import logging
@@ -42,7 +43,11 @@ _rubric_cache: dict[str, str] = {}
 async def init_redis_for_feedback_worker():
     global redis_client
     if redis_client is None:
-        redis_client = await aioredis.from_url(settings.REDIS_URL)
+        redis_client = await aioredis.from_url(
+            settings.REDIS_URL,
+            socket_connect_timeout=10,
+            socket_timeout=10,
+        )
 
 
 async def _get_rubric(knowledge_id: str) -> str:
@@ -101,7 +106,10 @@ async def _generate_solo_feedback(criteria: str, user_text: str) -> dict:
     )
 
     model = genai_standard.GenerativeModel("gemini-3-flash-preview")
-    response = await model.generate_content_async(full_prompt)
+    response = await asyncio.wait_for(
+        model.generate_content_async(full_prompt),
+        timeout=60.0,
+    )
 
     try:
         text = response.text.strip()
@@ -140,7 +148,10 @@ async def _generate_pvp_feedback(
     )
 
     model = genai_standard.GenerativeModel("gemini-3-flash-preview")
-    response = await model.generate_content_async(full_prompt)
+    response = await asyncio.wait_for(
+        model.generate_content_async(full_prompt),
+        timeout=60.0,
+    )
 
     try:
         text = response.text.strip()

@@ -1,3 +1,4 @@
+import asyncio
 import google.generativeai as genai
 from app.core.config import settings
 import json
@@ -23,7 +24,10 @@ class ScoringService:
         """
         try:
             prompt = self._build_prompt(user_text, criteria)
-            response = await self.model.generate_content_async(prompt)
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=45.0,
+            )
 
             # Simple cleanup for JSON parsing (remove markdown code blocks if present)
             cleaned_text = (

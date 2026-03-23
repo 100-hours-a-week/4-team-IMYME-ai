@@ -34,7 +34,11 @@ _rubric_cache: dict[str, str] = {}
 async def init_redis_for_worker():
     global redis_client, redis_lua
     if redis_client is None:
-        redis_client = await aioredis.from_url(settings.REDIS_URL)
+        redis_client = await aioredis.from_url(
+            settings.REDIS_URL,
+            socket_connect_timeout=10,
+            socket_timeout=10,
+        )
         redis_lua = RedisLuaScripts(redis_client)
         await redis_lua.init_scripts()
 

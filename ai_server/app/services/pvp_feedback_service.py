@@ -12,18 +12,13 @@ Solo 모드의 feedback_service.py + prompt_manager.py와 동일한 패턴으로
 - 프롬프트 연동: PVP_SYSTEM_PROMPT + 선택된 전략을 조합하여 피드백 생성
 """
 
+import asyncio
 import json
 import random
 import logging
 from typing import List, Dict, Any
 
 import google.generativeai as genai
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 
 from app.core.config import settings
 from app.core.prompts import PVP_SYSTEM_PROMPT, PVP_PERSONA_PROMPTS
@@ -163,19 +158,13 @@ class PvpFeedbackService:
 
         return result
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     async def _call_gemini_with_retry(self, prompt: str):
-        """
-        Gemini API 호출을 지수 백오프로 재시도합니다.
-        429(Rate Limit)나 500 에러 시 2초, 4초, 8초 간격으로 최대 3회 재시도.
-        """
+        """Gemini API 호출. 재시도는 RabbitMQ retry에 위임합니다."""
         logger.info("Calling Gemini API for PvP feedback...")
-        response = await self.model.generate_content_async(prompt)
+        response = await asyncio.wait_for(
+            self.model.generate_content_async(prompt),
+            timeout=60.0,
+        )
         return response
 
 
