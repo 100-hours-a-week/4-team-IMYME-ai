@@ -159,7 +159,7 @@ async def process_challenge_merge(body: dict, message: AbstractIncomingMessage) 
         # 공식: ceil(target_count / 2^next_level)
         # 이유: BE가 잘못된 expected_count를 보내도 정확한 값을 보장하기 위함
         next_level = level + 1
-        next_expected = math.ceil(target_count / (2 ** next_level))
+        next_expected = math.ceil(target_count / (2**next_level))
         list_key = f"pairs:{job_id}:level:{next_level}"
         arrived_key = f"pairs:{job_id}:level:{next_level}:arrived"
         serialized = json.dumps(merged_ids, ensure_ascii=False)
@@ -219,71 +219,33 @@ async def _handle_promote(
     target_count: int,
 ):
     """
-<<<<<<< Updated upstream
-    부전승 노드를 한 레벨 위로 재귀적으로 올려보냅니다.
-    최종 목표에 도달하면 랭킹 완료 처리합니다.
-=======
     부전승 노드를 상위 레벨로 올립니다. 재귀 대신 이터레이션으로 구현하여
     무한 루프를 방지합니다.
 
     expected_count는 BE 값에 의존하지 않고 ceil(target_count / 2^level)로 직접 계산합니다.
     max_level = ceil(log2(N)): 이 레벨을 초과하면 토너먼트 루트에 도달한 것으로 완료 처리합니다.
->>>>>>> Stashed changes
     """
-    if len(promoted_ids) >= target_count:
-        await _handle_ranking_complete(job_id, knowledge_id, promoted_ids, target_count)
-        return
+    max_level = math.ceil(math.log2(max(target_count, 2)))
 
-<<<<<<< Updated upstream
-    upper_level = current_level + 1
-    upper_expected = _calc_expected_count(current_expected)
-    list_key = f"pairs:{job_id}:level:{upper_level}"
-    arrived_key = f"pairs:{job_id}:level:{upper_level}:arrived"
-    serialized = json.dumps(promoted_ids, ensure_ascii=False)
-=======
     level = current_level
     ids = promoted_ids
->>>>>>> Stashed changes
 
-    action, data = await redis_lua.push_and_route(
-        list_key=list_key,
-        arrived_key=arrived_key,
-        serialized_array=serialized,
-        expected_count=upper_expected,
-    )
+    while True:
+        if len(ids) >= target_count:
+            await _handle_ranking_complete(job_id, knowledge_id, ids, target_count)
+            return
 
-    if action == "PAIR":
-        new_arr_a = json.loads(data[0])
-        new_arr_b = json.loads(data[1])
-        next_mission = {
-            "job_id": job_id,
-            "knowledgeBase_id": knowledge_id,
-            "level": upper_level,
-            "array_a": new_arr_a,
-            "array_b": new_arr_b,
-            "target_count": target_count,
-            "expected_count": upper_expected,
-        }
-        logger.info(f"Level UP ⬆️ PAIR after PROMOTE at Level {upper_level}")
-        await rabbitmq_service.publish(settings.CHALLENGE_MERGE_QUEUE, next_mission)
+        upper_level = level + 1
+        if upper_level > max_level:
+            logger.info(
+                f"[{job_id}] PROMOTE reached tournament root "
+                f"(level {upper_level} > max_level {max_level} = ceil(log2({target_count}))). "
+                f"Ranking complete."
+            )
+            await _handle_ranking_complete(job_id, knowledge_id, ids, target_count)
+            return
 
-<<<<<<< Updated upstream
-    elif action == "PROMOTE":
-        # 연쇄 부전승 → 재귀 호출
-        re_promoted = json.loads(data[0])
-        logger.info(f"🏅 Cascading PROMOTE at Level {upper_level}")
-        await _handle_promote(
-            job_id,
-            knowledge_id,
-            re_promoted,
-            upper_level,
-            upper_expected,
-            target_count,
-        )
-    else:
-        logger.info(f"⏳ WAIT after PROMOTE at Level {upper_level}")
-=======
-        upper_expected = math.ceil(target_count / (2 ** upper_level))
+        upper_expected = math.ceil(target_count / (2**upper_level))
         list_key = f"pairs:{job_id}:level:{upper_level}"
         arrived_key = f"pairs:{job_id}:level:{upper_level}:arrived"
         serialized = json.dumps(ids, ensure_ascii=False)
@@ -320,7 +282,6 @@ async def _handle_promote(
         else:  # WAIT
             logger.info(f"WAIT after PROMOTE at Level {upper_level}")
             return
->>>>>>> Stashed changes
 
 
 async def _handle_ranking_complete(
