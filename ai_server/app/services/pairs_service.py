@@ -99,17 +99,17 @@ class PairsService:
             response_schema=RESPONSE_SCHEMA,
             response_logprobs=True,
             logprobs=5,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
 
         async with self.api_semaphore:
             response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    client.models.generate_content,
+                client.aio.models.generate_content(
                     model=settings.PAIRS_MODEL_ID,
                     contents=prompt,
                     config=config,
                 ),
-                timeout=20.0,
+                timeout=60.0,
             )
 
         logprobs_data = []
@@ -259,4 +259,4 @@ class PairsService:
             beam = new_beam[: self.beam_size]
 
 
-pairs_service = PairsService()
+pairs_service = PairsService(beam_size=3)
