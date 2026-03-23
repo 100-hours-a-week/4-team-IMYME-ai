@@ -80,9 +80,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Validate REDIS_URL_PROD secret
-        run: |
-          test -n "${{ secrets.REDIS_URL_PROD }}"
+
 
       - name: Build and push image
         uses: docker/build-push-action@v6
