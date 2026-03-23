@@ -710,3 +710,416 @@ stt_result = await runpod_client.transcribe(audio_url=request.audio_url)
 1. **스레드 오버헤드 제거**: 무거운 `asyncio.to_thread()` 래퍼를 제거하여 AI 서버의 리소스(메모리) 낭비를 원천 차단함.
 2. **동시성(Concurrency) 극대화**: `await` 키워드를 만나는 순간, AI 서버는 응답을 멍하니 기다리지 않고 **즉시 제어권을 반환(Yield)**함. 대기하는 10여 초 동안 같은 이벤트 루프 내에서 수십 개의 다른 API 요청(웹소켓, DB I/O 등)을 멈춤 없이 병렬로 쳐낼 수 있게 됨 (Throughput 대폭 향상).
 3. **폴링 최적화**: 2초 간격 리트라이 루프에서도 동기식 `time.sleep(2)`가 아닌 `await asyncio.sleep(2)`를 사용하여 대기 효율을 높임.
+
+## 25. 챌린지 모드 동적 인원 랭킹 병합 알고리즘 설계 및 부전승(Promote) 처리 [2026-03-10 ~ 19]
+
+### 25.1. 문제 상황 (Problem)
+1. **고정 인원 한계**: 초기 챌린지 모드는 무조건 100명의 유저가 꽉 차야만 랭킹 알고리즘(PAIRS)이 일괄 동작하도록 설계되었음. 하지만 실제 서비스 환경에서는 네트워킹 지연, 이탈 등 다양한 요인으로 98명, 87명 등 유동적인 인원으로 게임이 시작되더라도 유연하게 동작해야 하는 요구사항이 발생함.
+2. **동적 상황에서의 최종 레벨(Root Node) 붕괴**: 인원이 유동적으로 변하면 트리의 뎁스(Depth)가 매번 달라지므로, 기존처럼 단순히 "길이가 100인 배열이 나오면 끝"이라는 식의 하드코딩된 종료 조건이 무력화됨. 언제 랭킹 비교가 끝난 것인지 추적 불가 상태에 빠짐.
+3. **홀수 병합 교착 상태 (Odd-Number Deadlock)**: 비동기 워커가 짝(Pair)을 지어 병합하게 되는데, 특정 레벨(Level)에 15명 등 홀수 개의 노드가 도달하면, 마지막 남은 1개 노드는 영원히 짝을 찾지 못하고 무한 대기(Hang) 상태에 빠져 전체 프로세스가 정지됨.
+
+### 25.2. 원인 분석 (Root Cause)
+- **비연결성 분산 트리 구조의 약점**: AI 워커들은 MQ(`q.pairs.eval`)에서 각자 맡은 노드만 떼어가서 평가하므로, "현재 자신이 합친 노드가 전체 트리의 어느 위치에 있는지", "이 노드가 최상단 루트(Root)에 가까운지" 여부를 판단할 전역 상태값(Global Context)이 설계상 부재했음.
+- **Merge Sort 구조 파괴**: 단순히 큐에 도착하는 순서대로 무작위 병합을 허용하면, 길이가 8인 노드와 길이가 1인 노드가 극단적으로 불평등하게 평가되는 트리 불균형 현상이 발생하여 효율적인 O(N log N) 시간 복잡도는 고사하고 LLM 토큰 소모가 극심해짐.
+
+### 25.3. 해결 방안 (Solution)
+
+#### 1. 동일 레벨 수평 병합 (Level-matched Queuing)을 통한 복잡도 확보
+Merge Sort 알고리즘의 복잡도를 효율적으로 통제하기 위해, 아무 노드나 병합하지 않고 반드시 **"동일한 Level에 도착한 노드끼리만"** 짝을 맞추도록 설계함.
+- MQ 페이로드에 `level` 값을 강제 부여하여, Level 0에서 승리한(합쳐진) 배열은 무조건 Level 1 대기열(Redis Hash)로 밀어넣어(Push) 완전히 동등한 길이(Weight)를 가진 다른 배열과 만나게 함으로써 이진 트리(Binary Tree)의 균형을 엄격하게 유지.
+
+#### 2. 동적 인원을 수용하는 스마트 Lua 스크립트 (Atomic Routing)
+워커들 간의 동시성 동기화 문제를 막기 위해 핵심 큐 라우팅 로직을 **원자적 단위로 작동하는 단일 Lua 스크립트**로 분리함.
+- `expected_count` (각 레벨에서 최종 도달해야 할 총 노드의 계산된 개수) 개념을 도입.
+- 노드가 레벨에 밀어넣어질(Push) 때마다 `arrived += 1`을 기록하며, `list_len >= 2`가 되는 순간 가장 먼저 2개를 Pop하여 **`PAIR`** (병합 미션 발행) 상태로 넘김.
+
+#### 3. 홀수 부전승(Promote) 감지 및 최종 레벨 확정 로직
+"홀수 깍두기" 및 "종료 시점 파악"이라는 고난도 알고리즘적 난제를 수학적 조건 하나로 깔끔하게 치환함.
+- **마지막 홀수 부전승 판단 로직**:
+  - 방금 들어온 노드로 인해 드디어 `arrived(도착 수) == expected(목표 수)`가 달성되었음에도 불구하고 짝꿍을 이루지 못하고 혼자 덩그러니 남았다면(`list_len == 1`), 이는 해당 레벨의 **"마지막 홀수 생존자"**임이 증명됨.
+  - 이 경우 Lua 스크립트는 **`PROMOTE`** 상태를 즉시 반환하며, 워커는 이 노드를 LLM 낭비 없이 쿨하게 그대로 다음 레벨(Level+1) 대기열로 부전승 승급(Cascading) 시킴.
+- **동적 인원 100% 대응의 핵심 (Root Node 파악)**: 
+  - 맨 처음 생성 시점의 `target_count`(전체 유동 참가자 73명, 89명 등)를 페이로드에 불변 값으로 계속 들고 다니도록 설계. 
+  - 워커가 병합 통계를 내어 현재 배열 길이가 `len(merged_ids) >= target_count`에 정확히 맞물리는 순간, 그 길이에 도달했다는 자체가 어떤 가변 인원이든 간에 **"모든 노드가 하나로 뭉친 최종 루트 노드"**임을 의미하므로 그 즉시 비동기로 랭킹 로직을 종료하고 피드백 Fan-out을 트리거하도록 구현함.
+
+### 25.4. 결과 및 효과 (Results)
+- 단 하나의 데드락 오류도 없이 5명, 7명, 99명 등 극한의 엣지 케이스부터 홀수 연쇄 폭발 상황까지 무한정 소화가 가능한 완전한 동적(Dynamic) 토너먼트 머신이 완성됨.
+- 각 레벨의 무결한 병합이 독립적인 MQ에서 병렬로 이루어짐으로써 최적의 O(N log N) 트리를 자율적으로 그려냄.
+
+
+## 26. Dev 환경 S3 Presigned URL 만료(403) — 환경 분리 미숙지 및 부하 테스트 충돌 [2026-03-20]
+
+### 26.1. 문제 상황 (Problem)
+- **증상**: Dev 서버의 STT 처리 전 단계에서 403 에러가 산발적으로 발생.
+  AI 서버 로그에는 타임스탬프가 없어 원인을 즉시 특정할 수 없었음.
+- **발견**: RunPod Serverless 대시보드에서 특정 인스턴스 1개가 계속 에러를 반복 출력하는 것을 확인. 해당 인스턴스 로그에는 타임스탬프와 함께 아래와 같은 에러가 찍혀 있었음.
+  ```
+  Transcription failed: Failed to download audio: 403 Client Error: Forbidden for url:
+  https://dev-imymemine.s3.../...?X-Amz-Expires=3600&X-Amz-Date=20260320T110430Z...
+  ```
+- **영향**: RabbitMQ 큐에 쌓인 **1,227개**의 STT 요청이 전량 만료된 Presigned URL로 재시도를 반복하는 상황이 발생.
+
+### 26.2. 원인 분석 (Root Cause)
+
+**복합 원인 2가지가 연속으로 충돌함:**
+
+1. **환경 공유에 대한 인지 미숙**:
+   - `prod`, `release`, `dev` 환경이 **서로 다른 EC2 인스턴스**지만, **RunPod Serverless 엔드포인트는 3개 환경이 동일한 것을 공유**하고 있었음.
+   - Cloud 팀원이 `release` 서버를 대상으로 대규모 부하 테스트를 진행하기로 했고, 관련 팀원이 승인을 줬으나 **RunPod이 공유된다는 사실을 인지하지 못한 채** 승인함.
+   - 부하 테스트로 release 서버에서 대량의 STT 요청이 발생 → RunPod 큐가 폭발적으로 적체됨.
+
+2. **Presigned URL 만료 (TTL 1시간)**:
+   - S3 Presigned URL의 유효기간이 `3600초(1시간)`으로 설정되어 있었음.
+   - 부하 테스트로 인한 적체로 메시지가 큐에서 **1시간 이상** 대기하다 처리되는 순간, URL이 이미 만료되어 RunPod의 S3 다운로드 요청이 403을 받게 됨.
+
+### 26.3. 해결 방법 (Solution)
+1. 팀 내 공유를 통해 상황을 파악하고, 부하 테스트를 즉시 중단.
+2. RabbitMQ에 적체된 **1,227개의 메시지를 Management UI에서 전량 Purge(삭제)** 처리.
+
+### 26.4. 재발 방지 (Prevention)
+- **환경별 RunPod 엔드포인트 분리** 필요. 최소한 부하 테스트 시에는 별도 엔드포인트를 사용해야 함.
+- AI 서버 로그에 **타임스탬프가 출력되도록 로깅 설정을 보강**하여, 다음에는 RunPod 대시보드를 먼저 보는 일을 줄일 수 있음.
+
+
+## 27. RabbitMQ prefetch_count=1 설정으로 인한 RunPod 단일 Worker 병목 [2026-03-20]
+
+### 27.1. 문제 상황 (Problem)
+- **증상**: 26번 인시던트 해결 과정에서, RunPod Serverless 대시보드를 보니 **6개의 Max Worker 설정에도 불구하고 항상 Worker 1개만 동작** 중인 것을 발견.
+- **기대**: 여러 유저가 동시에 STT를 요청하면 RunPod이 ALB를 통해 부하를 분산하여 최대 6개 Worker를 활용해야 함.
+- **현실**: 과거 REST API 방식일 때는 AI 서버가 동시에 여러 RunPod 요청을 날렸기 때문에 Worker가 여러 개 사용되었으나, **MQ 도입 이후 단 1개 Worker만 활용**되고 있었음.
+
+### 27.2. 원인 분석 (Root Cause)
+MQ 도입 시 `rabbitmq_service.py`에 **`prefetch_count=1`을 글로벌 채널 레벨로 적용**한 것이 원인이었음.
+
+`prefetch_count=1`의 의미는 "컨슈머가 현재 처리 중인 메시지를 완전히 Ack 하기 전까지는 절대 다음 메시지를 가져오지 말 것"으로, 이는 **완전한 순차(Sequential) 처리**를 의미함.
+
+결과적으로:
+```
+solo_stt_worker: msg1 처리 완료 (RunPod 1회 호출) → msg2 처리 완료 → msg3 처리 완료 ...
+               (한 번에 RunPod에 요청 1개만 → Worker 1개만 가동)
+```
+
+MQ 도입 당시 이 설정의 의미를 완전히 이해하지 못한 채 "안전하게 1개씩"이라는 의도로 적용했으나, 그 결과 6개 Serverless Worker 인프라를 사실상 낭비하고 있었음.
+
+### 27.3. 해결 방법 (Solution)
+글로벌 채널 레벨의 `prefetch_count=1` 설정을 **컨슈머 레벨의 per-consumer 방식으로 전환**하고, 수치를 `6`으로 상향 조정.
+
+```python
+# 수정 전: 채널 전체에 순차 처리 강제
+await self.channel.set_qos(prefetch_count=1)
+
+# 수정 후: 컨슈머 레벨에서 동시 6개 처리 허용 (부하 테스트 기준)
+prefetch = 6
+await queue.channel.set_qos(prefetch_count=prefetch)
+```
+
+이로써 각 STT 워커가 최대 6개의 메시지를 동시에 꺼내어 RunPod에 병렬 요청을 발생시키므로, RunPod ALB가 부하를 분산하여 최대 6개 Worker를 풀가동할 수 있게 됨.
+
+### 27.4. 교훈 (Lesson Learned)
+- **RabbitMQ prefetch_count는 단순한 배치 크기가 아니라, 인프라 병렬성을 결정하는 핵심 설정임**을 명심해야 함.
+- MQ 도입 시 "직전 아키텍처(REST API)에서 어떻게 동시성이 보장되었는지"를 먼저 파악하고, MQ 전환 후에도 동일한 동시성이 유지되는지 검증하는 단계가 반드시 필요함.
+- 실운영 시 `prefetch_count`는 RunPod `max_workers`와 STT 워커 수를 함께 고려하여 `ceil(max_workers / num_stt_workers)` 공식으로 산정하는 것을 권장함.
+
+## 28. 챌린지 모드 빈 배열(Empty Array) Truthiness 검증 버그 및 페이로드 기각 현상 [2026-03-22]
+
+### 28.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 큐(`challenge.pairs.eval`)에 정상적인 Payload 형태(`{target_count: 1, array_a: ["user1"], array_b: []}`)가 들어왔음에도 불구하고, AI 서버가 즉시 에러(`Invalid challenge merge payload`)를 뿜으며 처리를 튕겨냄 (Reject).
+- **영향**: 1인 플레이(참여자 1명)나, 홀수 인원으로 짝맞추기를 하다 마지막에 혼자 남은 유저 등 `PROMOTE`를 통해 부전승 승급 처리가 되어야 할 정상적인 데이터 흐름이 완전히 단절됨.
+
+### 28.2. 원인 분석 (Root Cause)
+`app/workers/challenge_worker.py` 내의 큐 메시지 Payload 검증(`Validation`) 구문의 설계 결함.
+
+```python
+# 기존 결함 코드
+if not all([job_id, level is not None, arr_a_ids, arr_b_ids]):
+    logger.error("Invalid challenge merge payload")
+```
+
+Python 언어의 **Truthiness(참/거짓 평가)** 특성에 의해, 빈 리스트(`[]`)는 조건문에서 암묵적으로 `False`로 취급됨. 따라서 짝꿍이 없는 홀수 케이스여서 `arr_b_ids` 필드에 정상적으로 빈 배열(`[]`)이 들어왔음에도 불구하고, 코드 검증문 전체가 거짓(`False`)으로 튕겨나가며 에러를 발생시킨 것.
+
+### 28.3. 해결 방법 (Solution)
+Python 내장 함수 `isinstance()`를 사용해 **"값이 비어있냐"가 아니라 "객체의 자료형이 리스트(List)가 맞느냐"**로 Truthiness 평가 방식을 전면 교체하여, 빈 배열도 안전하게 통과되도록 조치함.
+
+```python
+# 수정된 방어 코드
+if not all(
+    [
+        job_id is not None,
+        level is not None,
+        isinstance(arr_a_ids, list),  # 빈 배열 [] 도 True
+        isinstance(arr_b_ids, list),  # 빈 배열 [] 도 True
+    ]
+):
+```
+
+### 28.4. 교훈 (Lesson Learned)
+- Python에서 `if variable:` 과 같은 Truthiness 평가는 코드는 간결하게 만들지만, **0, "", [] 등 텅 빈 "정상 값(Falsy Value)"들까지 에러로 취급해버리는 엄청난 폭탄**이 될 수 있음.
+- 통신의 관문이 되는 Validation 로직에서는 반드시 `isinstance()`나 `is not None`처럼 엄격한 자료형(Type) 검사를 명시적으로 수행해야 우발적인 데이터 Drop을 막을 수 있음.
+
+## 29. 챌린지 모드 최종 피드백 JSON 구조(Payload) 스펙 불일치 오류 [2026-03-22]
+
+### 29.1. 문제 상황 (Problem)
+- **증상**: AI 챌린지 피드백 워커 로직과 Spring(백엔드) 서버 간의 Redis Hash(`challenge:{id}:feedbacks`) 적재 페이로드 스펙 불일치 및 속성명 누락 발생.
+- **상세**:
+  - 백엔드 기대 스펙: `{"user_id": 5, "rank": 1, "feedback_json": "{...}"}` (피드백 데이터가 통째로 Stringified JSON으로 묶인 형태)
+  - 기존 AI 서버 직렬화 스펙: `{"attemptId": 101, "rank": 1, "summary": "...", "keywords": [...]}` (개별 속성들이 모두 루트 레벨로 분산된 Spread 형태, user_id 누락)
+- **영향**: Spring 서버에서 HGET을 통해 최종 리더보드의 개인 피드백(My Page)을 렌더링할 때 역직렬화(Deserialization) 오류 또는 데이터 누락 발생.
+
+### 29.2. 원인 분석 (Root Cause)
+- 백엔드와 AI 간 챌린지 모드 최종 저장 단계에 대한 API/DB 협약(Spec)이 완벽히 동기화되지 않은 상태에서 각자 개발이 진행됨.
+- AI 워커는 참가자의 고유 식별자로 `attemptId`만 사용해 처리했으나 백엔드는 화면 렌더링에 `user_id`를 혼용하였고, 피드백 데이터를 단일 String 필드(`feedback_json`)로 매핑하려는 Java 엔티티 구조와 불일치함.
+
+### 29.3. 해결 방법 (Solution)
+- AI 단(`app/workers/challenge_feedback_worker.py`)에서 Redis에 적재하기 직전 데이터를 재조립하여 엄격한 백엔드 API 명세에 강제 정렬함.
+  1. `_get_participant_data()` 헬퍼 함수를 추상화하여, `participants` 해시에서 `sttText`뿐만 아니라 `userId` 필드를 같이 꺼내오도록 수정 (N+1 문제 없이 기존 로직 재활용).
+  2. Gemini가 산출한 딕셔너리(`feedback`)를 최상위에 Spread 하지 않고, `json.dumps()`를 통해 단일 문자열로 압축하여 `feedback_json` 키 안에 캡슐화.
+  3. JSON 최상단에 `user_id`, `rank` 필드만 선언하여 DTO 파싱 규격 통일.
+
+### 29.4. 교훈 (Lesson Learned)
+- 마이크로서비스(Spring ↔ Python Worker) 분리 환경에서는 **메시지 큐(MQ) 통신 포맷뿐만 아니라, 양쪽이 공유하는 Redis 스토리지의 입출력 JSON 직렬화 스키마(Schema)까지 완벽히 문서화하고 합의**해야 함.
+- TDD(단위 테스트)를 짤 때 역시, 내부 로직의 정상 동작 여부만 검증(`assert "summary" in parsed`)할 것이 아니라, 외부 인터페이스 스펙(계약, Contract) 자체를 Mock 데이터와 Asserion 코드에 반영하는 "계약 주도 테스트"가 필요함을 깨달음.
+
+## 30. Vertex AI 인증 오류 (Application Default Credentials Not Found) [2026-03-22]
+
+### 30.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드 병합 워커(`challenge.pairs.eval`) 실행 시, LLM 비교 호출 단계에서 `Your default credentials were not found` 에러가 발생하며 프로세스가 중단됨.
+- **영향**: PAIRS 알고리즘 기반의 지식 비교 연산이 불가능해져, 챌린지 랭킹 산출 전체 프로세스가 멈추는 치명적 장애 발생.
+
+### 30.2. 원인 분석 (Root Cause)
+- `app/services/pairs_service.py`에서 구글의 새로운 `google-genai` SDK를 사용하면서 `vertexai=True` 옵션을 활성화함.
+- **Vertex AI 모드**는 단순 API Key가 아닌 GCP의 **ADC(Application Default Credentials)** 인증 체계를 강제함. 배포 환경이나 로컬 환경에 `gcloud` 로그인 정보 또는 서비스 계정 키 파일(`JSON`)이 설정되어 있지 않아 인증에 실패함.
+
+### 30.3. 해결 방법 (Solution)
+- 일반적인 로컬 개발 환경이나 단순 배포 환경 편의성을 위해 API Key 방식으로도 대응 가능하나, **보안 정책상 Vertex AI를 필수 사용해야 하는 엔터프라이즈 환경**에서는 서비스 계정(Service Account)키 파일 연동이 제한될 수 있음 (컨테이너 내 키 파일 물리적 보관 금지 등).
+- 이를 해결하기 위해 AWS Parameter Store나 환경 변수에서 JSON 평문을 직접 통째로 문자열(`GCP_SA_JSON_STR`)로 긁어오도록 로직 아키텍처를 전면 개편함.
+- `app/services/pairs_service.py` 내의 클라이언트 초기화 로직에서 `service_account.Credentials.from_service_account_info(sa_info)`를 사용해, 물리적 파일 경로 지정(`GOOGLE_APPLICATION_CREDENTIALS`) 규제를 우회하고 메모리 상에서 즉석으로 ADC 인증을 통과시킴.
+
+### 30.4. 교훈 (Lesson Learned)
+- **Fileless 런타임 보안 아키텍처**: 클라우드 SDK 기본값은 주로 `File` 경로 접근을 유도하지만, 모던 컨테이너/클라우드 환경에서는 기밀 정보를 파일로 저장하는 것이 큰 안티패턴(Anti-pattern)이 될 수 있음.
+- 따라서 Google Cloud 라이브러리가 지원하는 메모리 인증 방식(`from_service_account_info`)을 적극 발굴/활용해, DevOps(CLOUD) 팀의 보안 기준을 충족하면서 파라미터 스토어와 완벽하게 연동되는 백엔드 시스템을 설계해야 함.
+
+---
+
+## 31. 챌린지 모드 무발화 유저 승리 버그 [2026-03-23]
+
+### 31.1. 문제 상황 (Problem)
+- **증상**: 챌린지 모드에서 음성을 녹음하지 않은 유저(무발화)가 PAIRS 토너먼트 비교에서 이기는 현상 발생.
+- **원인**: STT 결과가 빈 문자열(`""`)로 반환되었을 때 별도 처리 없이 PAIRS 비교로 넘어가, LLM이 빈 텍스트를 어떤 기준으로 채점하느냐에 따라 승패가 결정되었음.
+
+### 31.2. 해결 방법 (Solution)
+**2단계 처리 구조로 무발화를 조기에 차단함.**
+
+1. **STT 워커 단계 (`app/workers/challenge_stt_worker.py`)**: STT 결과 텍스트가 빈 문자열이거나 공백만 있으면 `[NO_ANSWER]` 마커로 치환하여 RabbitMQ에 발행.
+   ```python
+   stt_text = stt_result.get("text", "").strip()
+   if not stt_text:
+       stt_text = "[NO_ANSWER]"
+   ```
+
+2. **PAIRS 서비스 단계 (`app/services/pairs_service.py`)**: `compare_pair()` 호출 시 텍스트가 `[NO_ANSWER]`이거나 5자 미만이면 LLM 호출 없이 즉시 패배 처리.
+   ```python
+   MIN_TEXT_LENGTH = 5
+   NO_ANSWER_MARKER = "[NO_ANSWER]"
+   a_short = len(text_a.strip()) < MIN_TEXT_LENGTH or text_a.strip() == NO_ANSWER_MARKER
+   b_short = len(text_b.strip()) < MIN_TEXT_LENGTH or text_b.strip() == NO_ANSWER_MARKER
+   if a_short and b_short:
+       return 1.0, 0.0, 0.0  # 둘 다 무효 → A 타이브레이크 승리
+   if a_short:
+       return 0.0, 1.0, 0.0  # A 무효 → B 승리
+   if b_short:
+       return 1.0, 0.0, 0.0  # B 무효 → A 승리
+   ```
+
+### 31.3. 교훈 (Lesson Learned)
+- 프롬프트와 백엔드 로직 양쪽에 동일한 예외 처리 규칙을 두면 관리 포인트가 분산되어 일관성이 깨짐. **단일 진실 원천(Single Source of Truth)** 원칙에 따라 백엔드 코드에서만 처리하고 프롬프트에서는 제거.
+
+---
+
+## 32. 챌린지 피드백 JSON 포맷 불일치 (Rank 1 vs Rank 2+) [2026-03-23]
+
+### 32.1. 문제 상황 (Problem)
+- **증상**: PAIRS 병합 결과를 Redis에 적재할 때 1등과 2등 이하의 피드백 JSON 구조가 다름. 2등 이하 데이터에 `user_id`, `score` 등 불필요한 필드가 포함되어 BE 파싱 오류 발생 가능.
+- **기대 포맷** (모든 랭크 공통):
+  ```json
+  {
+    "user_id": 5,
+    "rank": 1,
+    "feedback_json": { "summary", "keywords", "facts", "understanding", "personalized_feedback" }
+  }
+  ```
+
+### 32.2. 해결 방법 (Solution)
+`app/workers/challenge_feedback_worker.py`의 `_generate_pvp_feedback()` 내부에서 Gemini 응답 딕셔너리에 포함된 불필요 필드를 제거:
+```python
+user_b = parsed.get("user_B", parsed)
+user_b.pop("user_id", None)
+user_b.pop("score", None)
+return user_b
+```
+
+---
+
+## 33. AWS SSM CD 파이프라인 연쇄 장애: `--output text` + 이중 이스케이프 [2026-03-23]
+
+### 33.1. 문제 상황 (Problem)
+- **1차 증상**: CD 파이프라인에서 SSM Parameter Store의 값을 `.env` 파일로 내보내는 과정에서 `line 4: unexpected character "/"` 에러 발생 → `docker-compose` 컨테이너 기동 불가.
+- **2차 증상** (1차 수동 패치 후): Vertex AI 클라이언트 초기화 실패 — `Unable to load PEM file. InvalidData(InvalidByte(0, 92))` — challenge.pairs.eval 큐 메시지가 영구 unacked 상태로 잔류.
+
+### 33.2. 원인 분석 (Root Cause)
+
+**1차: `--output text`가 `\n`을 실제 줄바꿈으로 변환**
+```bash
+# 기존 CD 스크립트
+aws ssm get-parameters-by-path ... --output text | while IFS=$(printf '\t') read -r name value
+```
+- `--output text`는 SSM 값의 `\n` (2글자 리터럴)을 실제 줄바꿈으로 출력함.
+- `read -r`은 한 번에 한 줄만 읽으므로 `GCP_SA_JSON_STR`의 private key가 여러 줄로 쪼개져 `.env`에 기록됨.
+- `docker-compose`는 multiline `.env` 값을 지원하지 않아 파싱 실패.
+
+**2차: 수동 패치 시 이중 이스케이프 발생**
+- 1차 문제 해결을 위해 SSM 파라미터의 `\n`을 `\\n`으로 수동 치환했으나, 이로 인해 `json.loads()` 파싱 후 private key가 실제 줄바꿈이 아닌 `\n` 리터럴(백슬래시 + n)로 남게 됨.
+- `service_account.Credentials.from_service_account_info()` 호출 시 PEM 파서가 `\` (byte 92)를 만나 `InvalidByte(0, 92)` 에러 발생.
+- Vertex AI 클라이언트 미초기화 → `generate_content` 호출 시 타임아웃 없이 영구 blocking → 메시지 unacked 고착.
+
+### 33.3. 해결 방법 (Solution)
+
+**Step 1: SSM 파라미터 올바른 값으로 재저장**
+
+`\n`이 단일 백슬래시 + n인 올바른 single-line JSON으로 저장:
+```bash
+# 로컬에서 SA JSON 파일을 올바르게 직렬화
+aws ssm put-parameter \
+  --name "/MINE/MVP1/AI/ENV/COMMON/GCP_SA_JSON_STR" \
+  --value "$(python3 -c "import json; print(json.dumps(json.load(open('gen-lang-client-xxx.json'))))")" \
+  --type "SecureString" \
+  --overwrite \
+  --region ap-northeast-2
+```
+
+**Step 2: CD 스크립트를 `--output json` + `jq`로 교체**
+
+```bash
+# 수정 전 (문제)
+aws ssm get-parameters-by-path ... --output text | while IFS=$(printf '\t') read -r name value; do
+  echo "$key=${value:-}" >> /home/ubuntu/.env
+done
+
+# 수정 후 (정상)
+aws ssm get-parameters-by-path ... --output json | \
+  jq -r '.Parameters[] | ((.Name | split("/") | last) + "=" + .Value)' >> /home/ubuntu/.env
+```
+- `--output json` → Python `jq`가 파싱 → `.Value`는 디코딩된 순수 문자열로 `.env`에 기록됨.
+- `\n` (JSON escape)이 실제 줄바꿈으로 변환되지 않고 2글자 리터럴 그대로 유지.
+- 컨테이너 내부에서 `json.loads(gcp_json_str)` 시 `\n` → 실제 줄바꿈으로 올바르게 변환됨.
+
+### 33.4. 이스케이프 흐름 정리
+
+```
+SA JSON 파일            python3 json.dumps()    SSM 저장값
+"private_key":          →  "private_key":       →  "private_key":
+"-----BEGIN\n           →  "-----BEGIN\\n       →  "-----BEGIN\n
+ MIIEvQ..."                MIIEvQ..."              MIIEvQ..."
+ (실제 줄바꿈)             (JSON 이스케이프)        (2글자: \+n)
+
+  ↓ jq -r 출력                ↓ .env 기록           ↓ json.loads()
+"private_key": "\n..."  →  GCP_SA=..."\n"...   →  실제 줄바꿈 ✅
+```
+
+### 33.5. 교훈 (Lesson Learned)
+- `aws ... --output text`는 JSON 이스케이프 시퀀스를 실제 문자로 변환하므로, multiline이 될 수 있는 값을 포함할 때 반드시 `--output json` + `jq` 또는 Python으로 처리해야 함.
+- 수동 패치(`\n` → `\\n` 치환)는 근본 원인을 해결하지 않고 새로운 이중 이스케이프 버그를 유발함. **수동 패치 후 반드시 전체 파이프라인 검증 필요**.
+
+---
+
+## 34. ElastiCache TLS 불일치로 인한 Redis 무한 Hanging [2026-03-23]
+
+### 34.1. 현상 (Symptom)
+
+- Release 서버에서 Challenge Merge Worker가 아래 로그 이후 무한 대기:
+  ```
+  INFO:imyme-challenge-worker:Merge Worker started for {job_id} at Level 0. Merging 1 vs 1 (target=5)
+  ```
+- RabbitMQ 관리 콘솔에서 메시지가 `Unacked` 상태로 고착.
+- Dev 서버에서는 동일한 코드가 정상 동작.
+
+### 34.2. 원인 (Root Cause)
+
+**ElastiCache In-Transit Encryption(TLS) 활성화 상태에서 `redis://`(non-TLS)로 연결 시도.**
+
+```
+AI 서버 (redis://)              ElastiCache (TLS 요구)
+     |                                  |
+     |── TCP 연결 요청 ────────────────>|  ← TCP 3-way handshake 성공 (포트 6379 열림)
+     |<─ TCP 연결 완료 ────────────────|
+     |                                  |
+     |── "PING\r\n" 평문 전송 ─────────>|  ← 서버는 TLS handshake를 기다리는 중
+     |                                  |  ← 평문 수신 → 무응답 (묵묵부답)
+     |  (socket_timeout 없음 → 무한 대기)|
+```
+
+- TCP 연결은 성공하므로 연결 에러가 발생하지 않음.
+- Redis 프로토콜 레벨에서 서버가 응답하지 않아 무한 blocking.
+- 기존 코드에 `socket_timeout`이 없어 에러 로그조차 남지 않았음.
+
+**Dev 서버와의 차이:** Dev 서버는 TLS가 비활성화된 Redis를 사용하므로 `redis://`로 정상 연결 가능.
+
+### 34.3. 진단 과정 (Diagnosis)
+
+**Step 1: socket_timeout 추가 후 에러 확인**
+
+`socket_connect_timeout=10, socket_timeout=10`을 Redis 클라이언트에 추가하여 10초 후 에러 발생 확인:
+```
+PING FAILED: Timeout reading from release-redis-001.release-redis.pny9nl.apn2.cache.amazonaws.com:6379
+```
+
+**Step 2: TLS 연결 테스트**
+
+```python
+tls_url = url.replace('redis://', 'rediss://', 1)
+r = await aioredis.from_url(tls_url, ssl_cert_reqs=None)
+await r.ping()  # → TLS PING OK: True
+```
+`rediss://`로 변경 시 즉시 PING 성공 → TLS 불일치가 원인임을 확인.
+
+### 34.4. 해결 방법 (Solution)
+
+**SSM Parameter Store에서 `REDIS_URL_RELEASE` 값 수정:**
+
+```bash
+# redis:// → rediss:// 로 변경
+aws ssm put-parameter \
+  --name "/MINE/MVP1/AI/ENV/RELEASE/REDIS_URL" \
+  --value "rediss://:비밀번호@{엔드포인트}:6379" \
+  --type "SecureString" \
+  --overwrite \
+  --region ap-northeast-2
+```
+
+**참고:** CD 스크립트의 `REDIS_URL` 덮어쓰기 라인도 확인 필요:
+```bash
+# release.yml CD 스크립트
+if grep -q '^REDIS_URL=' /home/ubuntu/.env; then
+  sed -i "s|^REDIS_URL=.*|REDIS_URL=${{ secrets.REDIS_URL_RELEASE }}|g" /home/ubuntu/.env
+```
+SSM에 저장 후 GitHub Secret `REDIS_URL_RELEASE`도 동일하게 `rediss://`로 업데이트해야 이 라인이 올바르게 덮어씀.
+
+### 34.5. 추가 조치: 외부 API 호출 Timeout 전면 적용
+
+Redis hanging을 계기로 전체 외부 API 호출에 timeout이 없는 지점을 모두 수정:
+
+| 파일 | 수정 내용 |
+|---|---|
+| `challenge_worker.py` | Redis `socket_connect_timeout=10s, socket_timeout=10s` |
+| `challenge_feedback_worker.py` | Redis 타임아웃 + Gemini `wait_for(60s)` |
+| `pairs_service.py` | Vertex AI `asyncio.wait_for(20s)` |
+| `feedback_service.py` | Gemini `wait_for(60s)` |
+| `scoring_service.py` | Gemini `wait_for(45s)` |
+| `pvp_feedback_service.py` | tenacity 제거 + Gemini `wait_for(60s)` |
+
+`pvp_feedback_service`의 tenacity는 RabbitMQ retry(3회)와 중복 적용되어 최악의 경우 **10분 대기** 후 FAIL을 유발했으므로 제거하고 RabbitMQ retry에 위임.
+
+### 34.6. 교훈 (Lesson Learned)
+- AWS ElastiCache 생성 시 **In-Transit Encryption(TLS)이 기본값 Enabled**. `redis://` 대신 `rediss://`를 사용해야 함.
+- `socket_timeout` 부재 시 TLS 불일치 같은 연결 이상이 **에러 로그 없이 무한 hanging**으로 나타남. 모든 외부 I/O에 반드시 timeout을 설정할 것.
+- timeout은 단순히 에러를 내는 것 이상으로, **문제를 가시화하는 디버깅 도구** 역할을 함.
+- Vertex AI 클라이언트 초기화 실패가 로그에 남지 않을 수 있음 (모듈 임포트 시점에 로깅 핸들러가 미설정 상태). 초기화 오류 추적은 `docker logs` 직접 확인 필요.

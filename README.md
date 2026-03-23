@@ -24,6 +24,7 @@
 ### 1. 🐇 Message Driven Architecture (RabbitMQ)
 - **Asynchronous Processing**: STT 변환 및 LLM 피드백 생성과 같은 무거운 작업을 HTTP 동기 통신 대신 MQ 기반의 비동기 워커 패턴으로 처리하여 병목을 제거했습니다.
 - **Robust Error Handling**: 3회 재시도(Retry) 및 DLQ(Dead Letter Queue, `ai.pvp.dlq`, `ai.solo.dlq`) 라우팅을 통해 장애 발생 시에도 데이터 유실 없이 안전하게 예외를 수집합니다.
+- **Horizontal Scaling**: 컨슈머 레벨의 `prefetch_count`를 최적화하여 1개의 서버리스 엔드포인트 내비 다양한 워커가 즉각적으로 트래픽을 분산 및 파이프라이닝할 수 있게 구성했습니다.
 
 ### 2. ⚡️ High-Performance Dual-Model Engine
 - **Speed & Cost**: 실시간 피드백 생성과 점수 산정에는 **Gemini 3 Flash**를 사용하여 응답 속도를 극대화했습니다.
@@ -36,6 +37,10 @@
 ### 4. 🎙️ Robust STT Pipeline (RunPod Serverless)
 - **Auto-Scaling**: GPU가 필요한 STT 워커는 RunPod 위에서 동작하며, 트래픽에 따라 **0개에서 N개까지 오토스케일링** 되어 비용 효율을 극대화합니다.
 - **Whisper Large v3 Turbo**: 최신 모델을 사용하여 한국어 및 IT 기술 용어 인식률을 대폭 끌어올렸습니다.
+
+### 5. 🏆 Challenge Mode (Dynamic Tournament Engine)
+- **Uncertainty-Guided PAIRS-beam**: 다대다 지식 서바이벌 병합 시, 확률적 엔트로피(Entropy) 기반의 빔 서치(Beam Search)를 도입하여 AI의 허위 정보(Hallucination)를 배제하고 지식적 우위를 판별하는 O(N log N) 트리를 자율 구축합니다.
+- **Smart Lua Script Routing**: Redis Lua 스크립트를 통해 원자성(Atomicity)을 보장하며, 1대1 병합 조건(`PAIR`), 홀수 발생 시 부전승(`PROMOTE`), 대기 상태(`WAIT`) 등의 상태를 AI 자체적으로 제어하는 무결점 동적 오케스트레이션을 달성했습니다.
 
 ---
 
@@ -55,6 +60,7 @@ graph LR
     subgraph "AI Core (Workers)"
         MQ -->|Consume| AI["AI Server (Python)"]
         AI -->|Generate| GEMINI[Google Gemini API]
+        AI -->|State & Lua| REDIS[(Redis Cache & Lua)]
         AI -->|Retrieve| DB[("PostgreSQL + pgvector")]
     end
     
@@ -74,6 +80,7 @@ graph LR
 - RunPod Account & API Key
 - Google Gemini API Key
 - PostgreSQL (pgvector enabled)
+- Redis (For Challenge Mode State & Lock)
 
 ### 1. Installation
 
@@ -96,6 +103,9 @@ pip install -r ai_server/requirements.txt
 # RabbitMQ Connection
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
 # LLM 
 GEMINI_API_KEY=your_gemini_api_key
 
@@ -112,7 +122,7 @@ DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/db_name
 FastAPI 프레임워크를 베이스로 하지만, 메인 역할은 RabbitMQ 워커의 백그라운드 실행입니다. 애플리케이션 시작 시(Lifespan) 모든 큐 수신기가 자동으로 연결됩니다.
 
 ```bash
-cd ai_server
+# ai_server 폴더 내부에서 실행
 uvicorn app.main:app --reload
 ```
 
@@ -121,14 +131,18 @@ uvicorn app.main:app --reload
 ## 📚 Communication Interfaces
 
 ### 1. Message Queue (RabbitMQ)
-기존 HTTP API로 동작하던 피드백 채점 및 STT 로직은 모두 비동기 큐잉 방식으로 이관되었습니다. 메인 서버는 아래 큐에 JSON Payload로 작업을 요청해야 합니다.
+기존 HTTP API로 동작하던 로직은 모두 비동기 큐잉 방식으로 이관되었습니다. 메인 서버는 아래 큐에 JSON Payload로 작업을 요청해야 합니다.
 
-| 워커 (Worker) | 요청 큐 (Request Queue) | 응답 큐 (Response Queue) | 역할 설명 |
-| :--- | :--- | :--- | :--- |
-| **Solo STT** | `solo.stt.request` | `solo.stt.response` | S3 오디오 파일을 텍스트로 변환 |
-| **Solo Feedback**| `solo.feedback.request` | `solo.feedback.response` | STT 텍스트와 기준을 바탕으로 심층 분석 |
-| **PvP STT** | `pvp.stt.request` | `pvp.stt.response` | (PvP 전용) 오디오 파일 텍스트 변환 |
-| **PvP Feedback** | `pvp.feedback.request` | `pvp.feedback.response` | (PvP 전용) 심층 채점 및 페르소나 피드백 |
+| 모드 | 워커 (Worker) | 수신 큐 (Request Queue) | 발행 큐 (Response Queue) | 역할 설명 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Solo** | **Solo STT** | `solo.stt.request` | `solo.stt.response` | S3 오디오 파일을 텍스트 변환 |
+| **Solo**| **Solo Feedback**| `solo.feedback.request` | `solo.feedback.response` | STT 텍스트와 기준을 바탕으로 심층 분석 |
+| **PvP** | **PvP STT** | `pvp.stt.request` | `pvp.stt.response` | (PvP 전용) 오디오 파일 텍스트 변환 |
+| **PvP** | **PvP Feedback** | `pvp.feedback.request` | `pvp.feedback.response` | (PvP 전용) 심층 채점 및 페르소나 피드백 |
+| **Challenge**| **Challenge STT** | `challenge.stt.request` | `challenge.stt.response` | 챌린지 참가자 음성 대규모 변환 |
+| **Challenge**| **Merge Engine** | `challenge.pairs.eval` | `challenge.pairs.eval` | Redis PAIRS-beam 기반 O(N log N) 승자/패자 병합 트릭 노드 생성 (내부 순환) |
+| **Challenge**| **Rank Complete**| *(Merge 도달)* | `challenge.final.done` | 최상위 루트 노드 도달 시 최종 랭킹 결과 통합 발행 |
+| **Challenge**| **Feedback** | `challenge.feedback.request` | `challenge.feedback.response` | 1대1 병합 결과 및 랭킹을 바탕으로 참가자 전원에게 1대1 개별 피드백 생성(Fan-Out) |
 
 > 📌 상세한 요청/응답 JSON 스키마 규격은 백엔드 협업용 문서를 참고하세요.
 
@@ -147,3 +161,4 @@ uvicorn app.main:app --reload
 - RabbitMQ Connection Timeout 이슈 해결
 - RunPod STT Serverless 배포 가이드 및 Cold Start 
 - Pydantic Validation Error 및 DLQ 추적 방법
+- 챌린지 모드 빈 배열(Empty Array) Truthiness 버그 등 엣지 케이스 처리

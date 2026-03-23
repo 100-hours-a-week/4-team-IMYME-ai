@@ -5,7 +5,7 @@ Provides asynchronous message queue communication using aio-pika's RobustConnect
 for automatic reconnection on network failures.
 
 Key features:
-- QoS (prefetch_count=1): Sequential processing, one message at a time per worker.
+- QoS (prefetch_count=6): Sequential processing, one message at a time per worker.
 - Manual Ack/Nack: Messages are acknowledged only after successful processing.
 - 3-Retry with DLQ: Failed messages are retried up to 3 times via a TTL-based
   retry queue. On the 3rd failure, a FAIL response is published to the result
@@ -36,6 +36,8 @@ REQUEST_TO_RESPONSE_QUEUE = {
     # Solo Mode
     settings.SOLO_STT_REQUEST_QUEUE: settings.SOLO_STT_RESULT_QUEUE,
     settings.SOLO_FEEDBACK_REQUEST_QUEUE: settings.SOLO_FEEDBACK_RESULT_QUEUE,
+    # Challenge STT
+    settings.CHALLENGE_STT_REQUEST_QUEUE: settings.CHALLENGE_STT_RESULT_QUEUE,
 }
 
 
@@ -50,17 +52,30 @@ class RabbitMQService:
         self.channel: aio_pika.RobustChannel | None = None
         self.pvp_exchange: aio_pika.Exchange | None = None
         self.solo_exchange: aio_pika.Exchange | None = None
+        self.challenge_exchange: aio_pika.Exchange | None = None
 
     def _get_exchange(self, queue_name: str) -> aio_pika.Exchange:
         """Return the correct exchange based on queue name prefix or contained sub-string."""
         if "solo" in queue_name:
             return self.solo_exchange
+        if (
+            "challenge" in queue_name
+            or "pairs" in queue_name
+            or "ranking" in queue_name
+        ):
+            return self.challenge_exchange
         return self.pvp_exchange
 
     def _get_dlq(self, queue_name: str) -> str:
         """Return the correct DLQ name based on queue name prefix."""
         if queue_name.startswith("solo."):
             return settings.SOLO_DLQ
+        if (
+            "challenge" in queue_name
+            or "pairs" in queue_name
+            or "ranking" in queue_name
+        ):
+            return settings.CHALLENGE_DLQ
         return settings.PVP_DLQ
 
     async def connect(self) -> None:
@@ -74,8 +89,9 @@ class RabbitMQService:
         self.connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
         self.channel = await self.connection.channel()
 
-        # QoS: process one message at a time per worker (sequential guarantee)
-        await self.channel.set_qos(prefetch_count=1)
+        # QoS will be set per-consumer in consume() to fine-tune parallelism
+        # (STT workers → prefetch=6 to match RunPod capacity;
+        #  Feedback/Merge workers → prefetch=6 for Gemini-backed parallelism)
 
         # Declare Direct Exchange (durable: survives server restart)
         self.pvp_exchange = await self.channel.declare_exchange(
@@ -92,6 +108,17 @@ class RabbitMQService:
         )
         solo_dlq = await self.channel.declare_queue(settings.SOLO_DLQ, durable=True)
         await solo_dlq.bind(self.solo_exchange, routing_key=settings.SOLO_DLQ)
+
+        # Challenge Mode Exchange & DLQ
+        self.challenge_exchange = await self.channel.declare_exchange(
+            settings.CHALLENGE_EXCHANGE, ExchangeType.DIRECT, durable=True
+        )
+        challenge_dlq = await self.channel.declare_queue(
+            settings.CHALLENGE_DLQ, durable=True
+        )
+        await challenge_dlq.bind(
+            self.challenge_exchange, routing_key=settings.CHALLENGE_DLQ
+        )
 
         logger.info("RabbitMQ connection established successfully.")
 
@@ -178,6 +205,15 @@ class RabbitMQService:
         """
         queue = await self.declare_and_bind_queue(queue_name)
 
+        # Per-consumer prefetch tuning:
+        #   STT queues   → prefetch=6
+        #   Other queues → prefetch=6  (Gemini-backed; no RunPod cap)
+        is_stt_queue = queue_name.endswith(".stt.request") or (
+            queue_name.endswith(".feedback.request") and "challenge" in queue_name
+        )
+        prefetch = 6 if is_stt_queue else 6
+        await queue.channel.set_qos(prefetch_count=prefetch)
+
         # Determine the response queue for publishing FAIL on final failure
         response_queue = REQUEST_TO_RESPONSE_QUEUE.get(queue_name)
 
@@ -187,8 +223,12 @@ class RabbitMQService:
 
             try:
                 body = json.loads(message.body.decode())
-                # Determine the identifier key: Solo uses attempt_id, PvP uses room_id
-                id_key = "attempt_id" if "solo" in queue_name else "room_id"
+                # Determine the primary identifier for logging
+                id_key = "attempt_id"
+                if "challenge" in queue_name:
+                    id_key = "attemptId"
+                elif "pvp" in queue_name:
+                    id_key = "room_id"
                 logger.info(
                     f"Consumed from '{queue_name}' (retry: {retry_count}): "
                     f"{id_key}={body.get(id_key, 'N/A')}"
@@ -236,27 +276,34 @@ class RabbitMQService:
                     if response_queue:
                         try:
                             original_body = json.loads(message.body.decode())
-                            # Solo uses attempt_id, PvP uses room_id
-                            id_key = "attempt_id" if "solo" in queue_name else "room_id"
                             fail_response = {
-                                id_key: original_body.get(id_key, 0),
                                 "status": "FAIL",
                                 "error": (
                                     f"Message failed after {MAX_RETRY_COUNT} "
                                     f"retry attempts: {str(e)}"
                                 ),
                             }
-                            # Include request_id for tracing
-                            if "request_id" in original_body:
-                                fail_response["request_id"] = original_body[
-                                    "request_id"
-                                ]
-                            # Include user_id for STT responses
-                            if "user_id" in original_body:
-                                fail_response["user_id"] = original_body["user_id"]
-                            # Include feedbacks:null for Feedback responses
-                            if "users" in original_body:
+                            # Preserve all known identifiers from the original body
+                            for key in [
+                                "room_id",
+                                "attempt_id",
+                                "attemptId",
+                                "challengeId",
+                                "request_id",
+                                "user_id",
+                            ]:
+                                if key in original_body:
+                                    fail_response[key] = original_body[key]
+
+                            # Schema-specific Null fields for final failure
+                            if (
+                                "challenge" in queue_name
+                                and "feedback.request" in queue_name
+                            ):
+                                fail_response["sttText"] = None
+                            elif "users" in original_body:
                                 fail_response["feedbacks"] = None
+
                             await self.publish(response_queue, fail_response)
                             logger.info(
                                 f"Published FAIL response to '{response_queue}' "
