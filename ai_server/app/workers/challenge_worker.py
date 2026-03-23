@@ -247,7 +247,6 @@ async def _handle_promote(
             await _handle_ranking_complete(job_id, knowledge_id, ids, target_count)
             return
 
-
         upper_expected = math.ceil(target_count / (2**upper_level))
 
         list_key = f"pairs:{job_id}:level:{upper_level}"
