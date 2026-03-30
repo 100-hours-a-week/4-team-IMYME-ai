@@ -1122,4 +1122,83 @@ Redis hanging을 계기로 전체 외부 API 호출에 timeout이 없는 지점�
 - AWS ElastiCache 생성 시 **In-Transit Encryption(TLS)이 기본값 Enabled**. `redis://` 대신 `rediss://`를 사용해야 함.
 - `socket_timeout` 부재 시 TLS 불일치 같은 연결 이상이 **에러 로그 없이 무한 hanging**으로 나타남. 모든 외부 I/O에 반드시 timeout을 설정할 것.
 - timeout은 단순히 에러를 내는 것 이상으로, **문제를 가시화하는 디버깅 도구** 역할을 함.
+
+---
+
+## 35. Prod Kubernetes: GCP_SA_JSON_STR 파싱 실패 (Vertex AI 클라이언트 초기화 오류)
+
+### 35.1. 증상
+
+```
+ERROR:imyme-pairs-service:Failed to initialize Vertex AI client: Expecting value: line 1 column 1 (char 0)
+```
+
+Vertex AI 클라이언트가 초기화되지 않고 fallback `genai.Client()` (인증 없음)로 동작. 실제 LLM 호출 시 인증 오류 발생.
+
+### 35.2. 원인
+
+**Release 환경과 Prod 환경의 환경변수 주입 방식 차이.**
+
+| 환경 | 주입 방식 | 따옴표 처리 |
+|---|---|---|
+| Release 서버 | CI/CD가 SSH로 `.env` 파일에 직접 씀 | pydantic-settings가 `.env` 파싱 시 **자동 제거** |
+| Prod (Kubernetes) | External Secrets Operator → SSM → K8s Secret → env var | **그대로 주입** (제거 안 함) |
+
+`.env` 파일 형식:
+```env
+GCP_SA_JSON_STR = '{"type":"service_account",...}'
+```
+
+이 값을 SSM에 등록할 때 앞뒤 `'`(작은따옴표)까지 포함해서 저장하면:
+- Release: pydantic이 `.env`를 읽으면서 따옴표를 자동 제거 → `json.loads` 성공
+- Prod: env var로 주입된 값이 `'{"type":...}'` → 첫 글자가 `'` → `json.loads` char 0에서 실패
+
+### 35.3. 진단 방법
+
+```bash
+# K8s Secret에 저장된 실제 값 확인
+kubectl get secret ai-secret -n mine-app \
+  -o jsonpath='{.data.GCP_SA_JSON_STR}' | base64 -d | head -c 5
+# '{"ty 로 시작하면 따옴표 포함된 것 → 문제
+# {"typ 로 시작하면 정상
+```
+
+```bash
+# SSM 파라미터 값 직접 확인
+aws ssm get-parameter \
+  --name "/MINE/MVP1/AI/ENV/COMMON/GCP_SA_JSON_STR" \
+  --with-decryption \
+  --query "Parameter.Value" \
+  --output text | cut -c1-5
+```
+
+### 35.4. 해결 방법
+
+SSM 파라미터를 **따옴표 없는 순수 JSON**으로 재등록:
+
+```bash
+aws ssm put-parameter \
+  --name "/MINE/MVP1/AI/ENV/COMMON/GCP_SA_JSON_STR" \
+  --value '{"type":"service_account","project_id":"..."}' \
+  --type SecureString \
+  --overwrite
+```
+
+즉시 동기화 (기본 refreshInterval 1h 대기 없이):
+```bash
+kubectl annotate externalsecret ai-secret -n mine-app \
+  force-sync=$(date +%s) --overwrite
+```
+
+Pod 재시작 후 확인:
+```bash
+kubectl rollout restart deployment ai -n mine-app
+kubectl logs -n mine-app -l app=ai --tail=50 | grep -i "vertex\|successful"
+# "Successfully initialized Vertex AI client using Service Account JSON String." 확인
+```
+
+### 35.5. 교훈 (Lesson Learned)
+- SSM 파라미터 등록 시 `.env` 파일 형식(`KEY = 'value'`)을 그대로 복붙하면 따옴표가 값에 포함됨. **SSM에는 값만 저장해야 함.**
+- pydantic-settings는 `.env` 파일 읽을 때만 따옴표를 자동 제거함. **환경변수로 주입된 값은 그대로 사용**하므로 두 환경의 동작이 달라짐.
+- Kubernetes 환경에서는 `.env` 파일이 존재하지 않으므로 SSM/Secret 값이 유일한 소스. SSM 등록 전 반드시 `| base64 -d | head -c 5`로 첫 글자 검증 필요.
 - Vertex AI 클라이언트 초기화 실패가 로그에 남지 않을 수 있음 (모듈 임포트 시점에 로깅 핸들러가 미설정 상태). 초기화 오류 추적은 `docker logs` 직접 확인 필요.
