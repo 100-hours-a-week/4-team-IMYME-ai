@@ -19,22 +19,20 @@ class InferenceService:
     # Main method to transcribe audio from a URL
     def transcribe(self, audio_url: str, language: str = None) -> dict:
         start_time = time.time()
-        temp_file_path = None
 
         try:
-            # 1. Download audio file
+            # 1. Download audio into memory (no disk I/O)
             logger.info(f"Downloading audio from {audio_url}")
-            temp_file_path = self.audio_loader.download_audio(audio_url)
+            audio_buffer = self.audio_loader.download_audio(audio_url)
 
             # 2. Get Model
             model = self.model_service.get_model()
 
-            # 3. Transcribe
+            # 3. Transcribe directly from in-memory buffer
+            # faster-whisper accepts BinaryIO (io.BytesIO) via av.open() internally
             logger.info("Starting transcription...")
-            # beam_size=5 is a common default
-            # Updated with VAD & Hallucination Prevention settings
             segments_generator, info = model.transcribe(
-                temp_file_path,
+                audio_buffer,
                 beam_size=5,
                 language=language,
                 # [VAD & Hallucination Prevention]
@@ -68,7 +66,3 @@ class InferenceService:
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
             raise e
-        finally:
-            # 5. Cleanup
-            if temp_file_path:
-                self.audio_loader.cleanup_file(temp_file_path)
