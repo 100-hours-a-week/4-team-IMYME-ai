@@ -4,7 +4,8 @@ import requests
 
 class AudioLoader:
     def __init__(self):
-        self.chunk_size = 8192
+        # 1MB
+        self.chunk_size = 1048576
 
     def download_audio(self, url: str) -> io.BytesIO:
         try:
