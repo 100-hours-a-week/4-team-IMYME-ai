@@ -14,6 +14,7 @@ by rabbitmq_service.py on the 3rd (final) failure attempt.
 """
 
 import re
+import time
 import logging
 
 from aio_pika.abc import AbstractIncomingMessage
@@ -24,6 +25,12 @@ from app.services.runpod_client import runpod_client
 from app.schemas.solo_mq_schema import SoloSTTRequest, SoloSTTResponse
 
 logger = logging.getLogger(__name__)
+
+# ── Global Deadline Budget Constants ──
+# Gemini(Feedback)가 실행될 수 있도록 최소한 확보해야 하는 시간
+GEMINI_MIN_RESERVED_SECONDS = 15.0
+# STT 단계에 배분할 수 있는 최대 예산
+STT_MAX_BUDGET_SECONDS = 40.0
 
 # Supported audio file extensions
 # 지원 오디오 포맷 목록
@@ -56,8 +63,9 @@ async def handle_solo_stt_message(body: dict, message: AbstractIncomingMessage) 
     Callback function to process a Solo STT request message.
 
     1. Parse and validate the message body (URL format + extension)
-    2. Call the RunPod STT server to extract text
-    3. Publish a SUCCESS SoloSTTResponse to the result queue
+    2. [NEW] Check global deadline budget — skip STT if insufficient time remains
+    3. Call the RunPod STT server for speech-to-text conversion
+    4. Publish a SUCCESS SoloSTTResponse to the result queue
 
     On failure, the exception is re-raised to trigger the RabbitMQ
     retry mechanism (up to 3 attempts with 5s delay between each).
@@ -72,20 +80,42 @@ async def handle_solo_stt_message(body: dict, message: AbstractIncomingMessage) 
         f"[Solo STT Worker] Processing attempt={request.attempt_id}, user={request.user_id}"
     )
 
-    # 2. Validate URL format
+    # 2. Global Deadline Budget Check
+    # Gemini 최소 보장 시간(15초)을 확보하고, STT는 최대 40초까지만 사용 가능
+    stt_timeout: float | None = None  # None이면 기존 기본 타임아웃 사용
+    if request.expires_at is not None:
+        remaining_time = request.expires_at - time.time()
+        stt_budget = min(
+            remaining_time - GEMINI_MIN_RESERVED_SECONDS, STT_MAX_BUDGET_SECONDS
+        )
+
+        if stt_budget <= 0:
+            raise TimeoutError(
+                f"[Global Deadline] STT 예산 부족으로 처리를 건너뜁니다. "
+                f"(remaining={remaining_time:.1f}s, required>{GEMINI_MIN_RESERVED_SECONDS}s)"
+            )
+
+        stt_timeout = stt_budget
+        logger.info(
+            f"[Solo STT Worker] Budget allocated: stt_timeout={stt_timeout:.1f}s "
+            f"(remaining={remaining_time:.1f}s)"
+        )
+
+    # 3. Validate URL format
     if not URL_PATTERN.match(request.audio_url):
         raise ValueError(f"유효한 URL인지 확인하세요. (input: {request.audio_url})")
 
-    # 3. Validate file extension
+    # 4. Validate file extension
     clean_url = request.audio_url.split("?")[0].lower()
     if not any(clean_url.endswith(ext) for ext in SUPPORTED_FORMATS):
         detected_ext = clean_url.split(".")[-1] if "." in clean_url else "unknown"
         raise ValueError(f"지원하지 않는 오디오 포맷입니다. ({detected_ext})")
 
-    # 4. Call RunPod STT (natively async)
+    # 5. Call RunPod STT (natively async) with dynamic timeout
     stt_result = await runpod_client.transcribe(
         audio_url=request.audio_url,
         language="ko",
+        timeout=stt_timeout,
     )
 
     # 5. Build and publish SUCCESS response

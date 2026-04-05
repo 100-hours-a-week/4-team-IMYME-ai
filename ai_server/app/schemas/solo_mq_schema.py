@@ -27,6 +27,10 @@ class SoloSTTRequest(BaseModel):
     user_id: int = Field(..., description="사용자 ID (Pass-through)")
     audio_url: str = Field(..., description="S3 오디오 파일 URL")
     timestamp: int = Field(..., description="요청 시간 (Unix timestamp)")
+    expires_at: Optional[float] = Field(
+        None,
+        description="글로벌 데드라인 (Unix timestamp). 이 시각을 넘기면 처리를 포기합니다.",
+    )
 
 
 class SoloSTTResponse(BaseModel):
@@ -66,6 +70,10 @@ class SoloFeedbackRequest(BaseModel):
         default_factory=list, description="이전 피드백 기록 리스트"
     )
     timestamp: int = Field(..., description="요청 시간 (Unix timestamp)")
+    expires_at: Optional[float] = Field(
+        None,
+        description="글로벌 데드라인 (Unix timestamp). 이 시각을 넘기면 처리를 포기합니다.",
+    )
 
 
 class SoloFeedbackData(BaseModel):
