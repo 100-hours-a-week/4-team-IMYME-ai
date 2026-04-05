@@ -26,7 +26,9 @@ class RunPodClient:
     # ──────────────────────────────────────────────
     # Public API — Pod 우선, Serverless 폴백
     # ──────────────────────────────────────────────
-    async def transcribe(self, audio_url: str, language: str = None) -> dict:
+    async def transcribe(
+        self, audio_url: str, language: str = None, timeout: float | None = None
+    ) -> dict:
         if not self.endpoint_id or not self.api_key:
             logger.warning("RunPod credentials not set. Returning mock response.")
             return self._mock_response(audio_url)
@@ -34,7 +36,7 @@ class RunPodClient:
         # 1️⃣ Pod가 설정되어 있으면 우선 시도
         if self.pod_url:
             try:
-                return await self._call_pod(audio_url, language)
+                return await self._call_pod(audio_url, language, timeout=timeout)
             except Exception as e:
                 logger.warning(
                     f"Pod request failed ({e}). Falling back to Serverless..."
@@ -46,12 +48,15 @@ class RunPodClient:
     # ──────────────────────────────────────────────
     # Pod — Direct HTTP POST to FastAPI
     # ──────────────────────────────────────────────
-    async def _call_pod(self, audio_url: str, language: str = None) -> dict:
+    async def _call_pod(
+        self, audio_url: str, language: str = None, timeout: float | None = None
+    ) -> dict:
         url = f"{self.pod_url.rstrip('/')}/transcribe"
         payload = {"audio_url": audio_url, "language": language}
 
-        logger.info(f"Sending request to Pod: {url}")
-        async with httpx.AsyncClient(timeout=self.pod_timeout) as client:
+        effective_timeout = timeout if timeout is not None else self.pod_timeout
+        logger.info(f"Sending request to Pod: {url} (timeout={effective_timeout}s)")
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
 

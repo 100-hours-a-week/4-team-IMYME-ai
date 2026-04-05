@@ -17,6 +17,7 @@ by rabbitmq_service.py on the 3rd (final) failure attempt.
 """
 
 import asyncio
+import time
 import logging
 
 from aio_pika.abc import AbstractIncomingMessage
@@ -61,11 +62,28 @@ async def handle_solo_feedback_message(
         f"[Solo Feedback Worker] Processing attempt={request.attempt_id}, user={request.user_id}"
     )
 
-    # 2. Validate criteria
+    # 2. Global Deadline Budget Check
+    # expires_at이 존재하면 남은 시간을 확인하고, 부족하면 Gemini를 호출하지 않음
+    gemini_timeout: float | None = None  # None이면 기존 동작(무제한 대기)
+    if request.expires_at is not None:
+        remaining_time = request.expires_at - time.time()
+
+        if remaining_time <= 0:
+            raise TimeoutError(
+                f"[Global Deadline] Feedback 예산 만료. Gemini API를 호출하지 않습니다. "
+                f"(remaining={remaining_time:.1f}s)"
+            )
+
+        gemini_timeout = remaining_time
+        logger.info(
+            f"[Solo Feedback Worker] Budget allocated: gemini_timeout={gemini_timeout:.1f}s"
+        )
+
+    # 3. Validate criteria
     if not request.criteria:
         raise ValueError("분석 기준(Criteria)이 누락되었습니다.")
 
-    # 3. Handle short text (hardcoded response, not an error)
+    # 4. Handle short text (hardcoded response, not an error)
     if len(request.stt_text.strip()) < MIN_TEXT_LENGTH:
         logger.info(
             f"[Solo Feedback Worker] Text too short (<{MIN_TEXT_LENGTH} chars). "
@@ -94,12 +112,25 @@ async def handle_solo_feedback_message(
         )
         return
 
-    # 4. Run Scoring + Feedback in parallel (same as analysis_service logic)
+    # 5. Run Scoring + Feedback in parallel (same as analysis_service logic)
     score_task = scoring_service.evaluate(request.stt_text, request.criteria)
     feedback_task = feedback_service.generate_feedback(
         request.stt_text, request.criteria, request.history
     )
-    score_result, feedback_result = await asyncio.gather(score_task, feedback_task)
+
+    # Global Deadline이 설정되어 있으면 asyncio.wait_for로 하드 타임아웃 적용
+    if gemini_timeout is not None:
+        try:
+            score_result, feedback_result = await asyncio.wait_for(
+                asyncio.gather(score_task, feedback_task),
+                timeout=gemini_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"[Global Deadline] Gemini 응답이 예산({gemini_timeout:.1f}s) 내에 완료되지 않았습니다."
+            )
+    else:
+        score_result, feedback_result = await asyncio.gather(score_task, feedback_task)
 
     # 5. Build and publish SUCCESS response
     response = SoloFeedbackResponse(

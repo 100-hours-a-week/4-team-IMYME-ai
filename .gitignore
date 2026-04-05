@@ -41,3 +41,5 @@ build/
 # Tests
 tests/
 pytest.ini
+
+ARCHITECTURE_SUMMARY.md
