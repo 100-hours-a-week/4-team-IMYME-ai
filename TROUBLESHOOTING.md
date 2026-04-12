@@ -133,61 +133,48 @@ Whisper 모델 사용 시, 실제 음성에 없는 텍스트가 생성되는 환
 ## 9. Knowledge Evaluation: Single-Target → Multi-Decision 전환 [2026-02-08]
 
 ### 9.1. 문제 상황 (Problem)
-- **기존 방식**: Hybrid Search(Vector + Keyword RRF)를 통해 **단 1개의 유사 지식**만 선택하여 UPDATE/IGNORE 판단.
+- **기존 방식**: Hybrid Search(Vector + Keyword RRF)를 통해 **단 1개의 유사 criteria**만 선택하여 UPDATE/IGNORE 판단.
 - **발생한 문제**:
-  1. **의도한 Criteria가 검색되지 않음**: 테스트 시 예상했던 업데이트 대상 지식이 검색 결과 1위로 나오지 않고, 다른 지식이 선택됨.
-  2. **UPDATE 실험 불가**: 검색된 지식이 의도와 다르다 보니, LLM이 계속 `IGNORE` 판단만 내려 실제 UPDATE 로직을 검증할 수 없었음.
-  3. **Same-Keyword 우선순위 누락**: 같은 Keyword를 가진 지식은 우선적으로 업데이트 대상이 되어야 하는데, 검색 알고리즘만으로는 이를 보장할 수 없었음.
+  1. **의도한 Criteria가 검색되지 않음**: 테스트 시 예상했던 업데이트 대상 criteria가 검색 결과 1위로 나오지 않는 경우 발생.
+  2. **UPDATE 실험 불가**: 검색된 criteria가 의도와 다르면 LLM이 계속 `IGNORE` 판단만 내려 실제 UPDATE 로직을 검증할 수 없었음.
 
 ### 9.2. 원인 분석 (Root Cause)
-1. **Hybrid Search의 한계**:
-   - Vector 유사도와 Keyword 매칭을 결합한 RRF 알고리즘은 **전체적인 유사성**을 기준으로 순위를 매김.
-   - 하지만 "같은 Keyword"라는 **명시적 우선순위**를 반영하지 못함.
-   - 결과적으로 다른 Keyword의 지식이 Vector 유사도가 높다는 이유로 1위를 차지할 수 있음.
 
-2. **Single-Target의 제약**:
-   - 1개만 선택하면 LLM이 판단할 수 있는 선택지가 제한됨.
-   - 검색 알고리즘의 오류나 편향을 LLM이 보정할 기회가 없음.
+**Single-Target의 근본적 제약**:
+- 단 1개만 선택하면 LLM이 판단할 수 있는 선택지가 없음.
+- FTS 매칭 또는 벡터 유사도 중 하나라도 기준을 통과하지 못하면 후보 자체가 없어 항상 IGNORE.
+
+**`keyword_id` 필터의 역할 명확화**:
+- `findSimilarKnowledgeByHybridRRF()` 쿼리는 두 브랜치 모두 `AND keyword_id = :keywordId`를 포함한다.
+- 이는 다른 keyword의 criteria를 **쿼리 레벨에서 완전히 차단**한다 (우선순위 부여가 아닌 스코프 제한).
+- 현재 keyword당 criteria가 1개이므로 RRF 후보 수는 최대 1개다.
 
 ### 9.3. 해결 방안 (Solution)
-**Multi-Decision Evaluation 도입**: 여러 개의 후보를 LLM에게 제공하고, 각각에 대해 독립적으로 UPDATE/IGNORE 판단하도록 변경.
+
+**Multi-Decision Evaluation 도입**: criteria의 각 항목에 대해 LLM이 독립적으로 UPDATE/IGNORE 판단.
 
 #### 변경 사항 (Changes)
 
-##### 1. **검색 로직 개선** (Backend: `KnowledgeBatchService.java`)
+##### 1. **검색 로직** (Backend: `KnowledgeBatchService.java`)
+
+Hybrid RRF 결과를 직접 AI 평가에 전달한다. `keyword_id` 필터가 쿼리에 포함되어 있으므로 같은 keyword 내 criteria만 후보로 반환된다.
+
 ```java
-// Step 1: Same-Keyword Items (항상 포함)
-List<KnowledgeBase> sameKeywordItems = knowledgeRepository
-    .findByKeywordId(keywordId)
-    .stream()
-    .limit(10)
-    .collect(Collectors.toList());
-
-// Step 2: Hybrid RRF Search (다양한 후보 검색)
-List<KnowledgeSearchResult> rrfResults = knowledgeRepository
+// Hybrid RRF Search: FTS + Vector 결합 (keyword_id 스코프 내)
+List<KnowledgeSearchResult> mergedSimilars = knowledgeRepository
     .findSimilarKnowledgeByHybridRRF(
-        candidate.refinedText(), 
-        vectorStr, 
-        keywordId, 
-        20  // 충분한 후보 확보
-    );
-
-// Step 3: Merge & Filter
-// - Same-Keyword는 무조건 포함 (distance = 0.0)
-// - RRF 결과는 Threshold 필터링 후 중복 제거하여 추가
-List<KnowledgeSearchResult> mergedSimilars = mergeSimilarResults(
-    sameKeywordItems, 
-    filteredRrfResults, 
-    keyword
-);
+        candidate.refinedText(), // queryText: FTS 검색용 (candidate 내용과 겹치는 토큰 탐색)
+        embeddingVector,          // queryEmbedding: 벡터 검색용
+        keywordId,
+        properties.getMaxSimilarCount());
 ```
 
-**핵심 개선점**:
-- **Same-Keyword 우선 보장**: `findByKeywordId`로 같은 Keyword 지식을 먼저 가져와 `distance=0.0`으로 설정하여 최우선 순위 부여.
-- **다양한 후보 확보**: RRF로 최대 20개 검색 후 Threshold 필터링하여 품질 유지.
-- **중복 제거**: Same-Keyword와 RRF 결과를 병합하되, ID 중복은 제거.
+> **[2026-03-30 설계 수정]** 초기 구현에서는 `findByKeywordId()`로 동일 keyword의 criteria를 별도 조회하여 `distance=0.0`으로 고정한 뒤 RRF 결과와 병합했다. 이는 두 가지 이유로 제거되었다.
+> 1. RRF 쿼리에 이미 `keyword_id` 필터가 있어 중복 조회다.
+> 2. `distance=0.0` 인위 주입으로 RRF 관련도와 무관한 criteria가 AI에게 "완전 유사"로 전달되어 잘못된 UPDATE를 유발한다.
 
-##### 2. **AI Server 프롬프트 수정** (`prompts.py`)
+##### 2. **AI Server 프롬프트** (`prompts.py`)
+
 ```python
 KNOWLEDGE_EVALUATION_PROMPT = """
 당신은 지식 베이스 관리자입니다. 새로운 후보 지식과 기존 유사 지식들을 비교하여,
@@ -217,44 +204,61 @@ KNOWLEDGE_EVALUATION_PROMPT = """
 """
 ```
 
-**핵심 변경점**:
-- **Single → Multi**: 1개 결과 → `results` 배열로 변경.
-- **각 항목 독립 판단**: LLM이 문맥과 Keyword를 종합하여 각 Similar Item에 대해 개별 결정.
-- **Keyword 우선순위 명시**: Prompt에 "같은 Keyword면 우선 고려" 규칙 추가.
+##### 3. **Backend 처리 로직** (`KnowledgeBatchService.java`)
 
-##### 3. **Backend 처리 로직 수정** (`KnowledgeBatchService.java`)
 ```java
-// 기존: 단일 결과 처리
-if ("UPDATE".equals(evalResult.decision())) {
-    updateKnowledge(targetId, finalContent);
-}
-
-// 변경: 다중 결과 순회 처리
-for (EvaluationDecision decision : evalResult.results()) {
-    if ("UPDATE".equals(decision.decision())) {
-        Long targetId = Long.parseLong(decision.targetId());
-        updateKnowledge(targetId, decision.finalContent());
+// 다중 결과 순회 처리 (UPDATE / IGNORE만 존재, 새 행 생성 없음)
+for (KnowledgeEvaluationResponse.ResultItem result : results) {
+    if ("UPDATE".equalsIgnoreCase(result.decision()) && result.targetId() != null) {
+        Long knowledgeId = Long.parseLong(result.targetId());
+        updateKnowledgeWithEvalResult(knowledgeId, result); // content 병합 후 저장
         updatedCount++;
     } else {
-        ignoredCount++;
+        ignoredCount++; // IGNORE: 아무 처리 없음
     }
 }
 ```
 
-### 9.4. 결과 및 효과 (Results)
-1. **UPDATE 검증 가능**: 같은 Keyword 지식이 항상 포함되므로, 의도한 업데이트 시나리오 테스트 가능.
-2. **LLM 판단력 활용**: 검색 알고리즘의 한계를 LLM이 보완. 여러 후보 중 실제로 업데이트할 가치가 있는 것만 선택.
-3. **유연성 향상**: 1개 제약 제거로 동시에 여러 지식을 업데이트하거나, 모두 IGNORE 가능.
-4. **정확도 개선**: Keyword Context를 명시적으로 제공하여 LLM의 판단 근거 강화.
+### 9.4. 현재 구조의 한계와 Hybrid RRF의 실제 동작
+
+**현재 (keyword당 criteria 1개):**
+
+```
+RRF 검색 결과 = 최대 1개
+
+keyword_results (FTS):  criteria 1개가 query 토큰과 겹치면 포함, 아니면 탈락
+semantic_results (Vector): criteria 1개의 cosine distance <= 0.3이면 포함, 아니면 탈락
+
+→ 사실상 "FTS 매칭 OR 벡터 유사도 임계값 통과" 이진 필터와 동일
+→ RRF 점수 계산(순위 융합)이 실질적으로 무의미
+```
+
+**Hybrid RRF가 진정한 의미를 갖는 조건 = criteria를 섹션별로 청킹**:
+
+```
+keyword_id=1 ("스프링") criteria를 섹션별 청킹 시:
+  id=101, content="IoC 컨테이너: 빈의 생명주기 관리..."  → embedding_A
+  id=102, content="AOP: 관점지향 프로그래밍..."          → embedding_B
+  id=103, content="트랜잭션: @Transactional 동작..."     → embedding_C
+
+candidate.refinedText = "스프링 빈 초기화 순서 관련 피드백..."
+
+FTS branch:  "빈", "초기화" → id=101 ts_rank 압도적으로 높음
+Semantic:    embedding 유사도 → id=101 cosine_distance 가장 낮음
+RRF 결과:   id=101이 1위 → AI가 해당 섹션만 집중 평가 후 UPDATE
+
+→ 섹션 단위로 정밀한 지식 업데이트 가능
+```
+
+이 구조에서 V0006(search_vector에 content 포함), V0007(content 업데이트 시 트리거 발동)이 필수 전제조건이 된다.
 
 ### 9.5. 트레이드오프 (Trade-offs)
 - **비용 증가**: LLM에게 더 많은 정보를 전달하므로 Token 사용량 증가.
 - **응답 시간**: 여러 항목 판단으로 인해 약간의 지연 발생 (하지만 `gemini-flash` 사용으로 완화).
-- **복잡도**: Backend 로직이 단일 결과 처리에서 배열 순회로 변경되어 코드 복잡도 증가.
 
 ### 9.6. 향후 개선 방향 (Future Improvements)
+- **섹션별 청킹 도입**: criteria를 의미 단위(섹션)로 분리하여 각각 독립 행으로 저장. 이 경우 Hybrid RRF가 어느 섹션이 피드백과 관련 있는지 정밀하게 탐색하며, 섹션 단위 UPDATE로 criteria의 특정 부분만 정교하게 갱신 가능.
 - **Adaptive Candidate Count**: 검색 결과 품질에 따라 LLM에게 전달할 후보 수를 동적 조정.
-- **Batch Evaluation**: 여러 Candidate를 한 번에 평가하여 API 호출 횟수 감소.
 - **Confidence Score**: LLM이 각 결정에 대한 확신도를 반환하도록 하여 임계값 기반 필터링 가능.
 
 
@@ -1217,23 +1221,145 @@ kubectl logs -n mine-app -l app=ai --tail=50 | grep -i "vertex\|successful"
 
 #### (1) Whisper 모델의 "All-or-Nothing" 처리 특성
 
-비디오 스트리밍처럼 들어오는 즉시 처리할 수 있는 데이터라면 8KB씩 잘게 쪼개서 다운로드와 처리를 병렬(Interleaving)로 진행하는 것이 합리적이다.
-
-그러나 faster-whisper는 오디오 파일 전체가 메모리에 온전히 적재된 후에야 디코딩과 추론(Inference)을 시작한다. 즉, 8KB씩 수십 번 받든 1MB를 한 번에 받든 **"파일을 다 받을 때까지 모델은 아무것도 할 수 없다"**는 사실은 동일하다. 어차피 기다려야 한다면, 잘게 쪼개서 Python 루프와 시스템 콜을 반복 발생시키는 오버헤드를 없애는 것이 이득이다.
+faster-whisper는 오디오 파일 전체가 메모리에 적재된 후에야 디코딩·추론을 시작함. 8KB씩 수십 번 받든 1MB를 한 번에 받든 **"파일을 다 받을 때까지 모델은 대기"** 하는 사실은 동일. 청크를 잘게 쪼갤수록 Python 루프·시스템 콜 오버헤드만 증가함.
 
 #### (2) 데이터센터 간 광대역 네트워크 (Low Latency & High Throughput)
 
-일반 사용자의 모바일(LTE/5G)이나 불안정한 Wi-Fi 환경이라면 패킷 유실을 대비해 작은 청크가 안전하다. 그러나 AWS S3와 RunPod는 모두 초고속 백본망을 갖춘 데이터센터이다. 두 서버 간 1MB 수준의 데이터는 수 밀리초 이내에 사실상 한 덩어리로 도착한다. 1MB를 기다리며 발생하는 블로킹 시간 자체가 인지 불가 수준으로 짧으므로, 청크 크기가 너무 작아 Python 코드가 네트워크 처리량을 따라가지 못하는 상황을 방지해야 한다.
+AWS S3와 RunPod는 모두 초고속 백본망을 갖춘 데이터센터. 1MB 수준의 데이터는 수 밀리초 이내에 사실상 한 덩어리로 도착하므로, 청크 크기가 너무 작으면 Python 코드가 네트워크 처리량을 따라가지 못하는 역전 현상이 발생함.
 
 #### (3) OS 커널과 TCP 소켓 버퍼
 
-`chunk_size=8192`를 설정했다고 해서 NIC가 데이터를 딱 8KB씩만 받는 것이 아니다. Linux 커널의 TCP 수신 버퍼는 광대역 네트워크에 맞춰 수백 KB ~ 수 MB를 백그라운드에서 미리 수신해 놓는다. 데이터는 이미 OS 메모리에 도착해 있는데, 애플리케이션 단에서 "8KB씩만 줘"라고 하면 OS ↔ Python 사이를 수십 번 왕복(Context Switching)하며 데이터를 퍼 나르는 오버헤드가 발생한다. 청크 크기를 키우면 OS 버퍼에 있는 데이터를 한 번에 Python 메모리로 가져올 수 있다.
+Linux 커널의 TCP 수신 버퍼는 수백 KB ~ 수 MB를 백그라운드에서 미리 수신해 놓음. `chunk_size=8192` 설정 시 이미 OS 메모리에 도착한 데이터를 OS ↔ Python 간 수십 번 Context Switching으로 옮기는 오버헤드가 발생. 청크를 키우면 한 번에 가져올 수 있음.
 
 ### 36.3. 영향 범위
 
-`chunk_size`는 `AudioLoader` 내부에서만 사용되는 네트워크 수신 버퍼 크기다. 외부 인터페이스(`download_audio(url) → io.BytesIO`)는 변경 없으므로 `inference_service.py`, `main.py` 등 의존 파일은 수정 불필요.
+`chunk_size`는 `AudioLoader` 내부 네트워크 수신 버퍼 크기에만 영향. 외부 인터페이스(`download_audio(url) → io.BytesIO`)는 변경 없으므로 `inference_service.py`, `main.py` 등 의존 파일 수정 불필요.
 
 ### 36.4. 교훈 (Lesson Learned)
 
-- 스트리밍 청킹이 항상 유리한 것은 아니다. **처리 모델이 전체 데이터를 요구하는 경우(All-or-Nothing)** 에는 오히려 청크를 크게 잡아 OS ↔ 애플리케이션 간 컨텍스트 스위칭 횟수를 줄이는 것이 효율적이다.
-- 네트워크 환경(데이터센터 내부 vs 모바일 클라이언트)에 따라 최적 청크 크기가 달라진다. 동일 클라우드 리전 내 서버 간 통신에서는 큰 청크가 유리하다.
+- 처리 모델이 전체 데이터를 요구하는 **All-or-Nothing** 구조에서는 작은 청크가 오히려 오버헤드. 청크 크기는 처리 모델의 특성에 맞게 결정해야 함.
+- 네트워크 환경(데이터센터 내부 vs 모바일 클라이언트)에 따라 최적 청크 크기가 달라짐. 동일 클라우드 리전 내 서버 간 통신에서는 큰 청크가 유리함.
+
+---
+
+## 37. BE RAG 파이프라인 버그 수정 및 Hybrid RRF 설계 정비 [2026-03-30 ~ 2026-04-12]
+
+> **대상 저장소**: `4-team-IMYME-be`
+> **수정 파일**: `KnowledgeBaseRepository.java`, `KnowledgeBatchService.java`, `V20260201_0007__fix_trigger_on_content_update.sql`
+
+### 37.1. 배경
+
+`knowledge_base.content`는 사용자 피드백 저장소가 아닌, **소크라테스식 피드백 생성 시 참조하는 평가 기준(Criteria)** 임. 배치 파이프라인(`KnowledgeBatchService`)은 `card_feedback`에 쌓인 피드백을 AI로 정제한 뒤, 기존 Criteria와 비교하여 **UPDATE 또는 IGNORE** 만 수행. 새 행(Row)은 생성되지 않음.
+
+현재 설계에서 `keyword_id`당 Criteria는 1개이므로 Hybrid RRF 검색은 사실상 단일 행을 대상으로 실행됨. 섹션 기반 청킹 도입 시 keyword당 여러 행이 생기면서 RRF 랭킹 융합이 실질적인 의미를 갖게 됨.
+
+### 37.2. 증상 1: content 업데이트 후 FTS 검색 결과 미반영
+
+배치 파이프라인이 Criteria(`content`)를 업데이트해도 FTS 검색에서 갱신된 내용이 반영되지 않음.
+
+#### 원인
+
+`V0005` 마이그레이션 트리거의 발동 조건이 `UPDATE OF keyword_id`만 감지하도록 설정됨. `V0006`에서 트리거 함수를 수정해 `content`를 가중치 'B'로 포함시켰으나, 트리거 이벤트 조건 자체는 변경되지 않아 `content` 업데이트 시 트리거가 발동되지 않음.
+
+```sql
+-- V0005 (버그)
+CREATE TRIGGER trg_update_kb_search_vector
+BEFORE INSERT OR UPDATE OF keyword_id ON knowledge_base  -- content 누락
+FOR EACH ROW EXECUTE FUNCTION update_kb_search_vector();
+```
+
+#### 해결 방법
+
+`V20260201_0007__fix_trigger_on_content_update.sql`을 신규 생성하여 트리거 재정의.
+
+```sql
+DROP TRIGGER IF EXISTS trg_update_kb_search_vector ON knowledge_base;
+
+CREATE TRIGGER trg_update_kb_search_vector
+BEFORE INSERT OR UPDATE OF keyword_id, content ON knowledge_base
+FOR EACH ROW EXECUTE FUNCTION update_kb_search_vector();
+```
+
+### 37.3. 증상 2: Hybrid RRF distance 값 왜곡
+
+AI 평가 서버로 전달되는 `distance` 값이 의미상 잘못된 값을 반환함. semantic 브랜치에 매칭되지 않은 row가 "완전히 유사(distance=0.0)"로 처리되어 AI 판단이 오염됨.
+
+#### 원인
+
+RRF 쿼리 최종 SELECT에서 `similarity`(1에 가까울수록 유사)를 `distance`(0에 가까울수록 유사)로 변환하지 않고 그대로 반환. NULL 처리 기본값도 잘못 설정됨.
+
+```sql
+-- 수정 전 (버그)
+COALESCE(sr.similarity, 0.0) AS distance
+-- semantic 미매칭(NULL) → 0.0 = "완전히 동일" (오류)
+-- similarity를 distance로 미변환 (의미 역전)
+```
+
+#### 해결 방법
+
+```sql
+-- 수정 후
+COALESCE(1.0 - sr.similarity, 1.0) AS distance
+-- 1.0 - similarity: distance 공간으로 변환 (similarity=0.9 → distance=0.1)
+-- NULL → 1.0: "완전히 비유사(최대 거리)"로 올바르게 처리
+```
+
+### 37.4. 증상 3: sameKeywordItems 조회로 RRF 랭킹 왜곡
+
+RRF 검색 결과와 별개로 단순 keyword 조회 결과를 수동 병합하는 로직이 존재하여 RRF 점수 기반 랭킹이 훼손됨.
+
+#### 원인
+
+```java
+// 수정 전: 3단계 병합 로직
+List<KnowledgeBase> sameKeywordItems = knowledgeRepository
+    .findByKeywordId(keywordId).stream().limit(10).toList();  // RRF 점수 없음
+List<KnowledgeSearchResult> similarByVector = knowledgeRepository
+    .findSimilarKnowledgeByHybridRRF(...);
+List<KnowledgeSearchResult> mergedSimilars = mergeSimilarResults(sameKeywordItems, similarByVector);
+```
+
+keyword당 Criteria가 1개인 구조에서 두 조회가 항상 같은 row를 반환하므로 병합 로직이 노이즈만 추가함.
+
+#### 해결 방법
+
+`sameKeywordItems` 조회, `mergeSimilarResults()` 메서드, `KnowledgeSearchResultImpl` inner class를 모두 제거하고 RRF 결과를 직접 사용. (~120줄 감소)
+
+```java
+// 수정 후: RRF 결과 직접 사용
+List<KnowledgeSearchResult> mergedSimilars = knowledgeRepository
+    .findSimilarKnowledgeByHybridRRF(
+        candidate.refinedText(), embeddingVector,
+        keywordId, properties.getMaxSimilarCount());
+```
+
+### 37.5. 설계 수정: Semantic 브랜치의 교차 keyword 검색 허용
+
+#### 배경
+
+'프로세스'와 '스레드'처럼 의미가 겹치는 도메인 개념이 존재함. 기존 구현에서는 두 브랜치 모두 `keyword_id` 필터를 적용하여, 벡터 유사도가 높은 타 keyword의 Criteria가 AI 평가에 진입하지 못함. 의미론적으로 인접한 도메인 지식을 활용하지 못하는 설계 한계였음.
+
+#### 해결 방법
+
+FTS 브랜치는 `keyword_id` 필터를 유지(도메인 어휘 정밀도 보장), Semantic 브랜치에서만 필터를 제거.
+
+```sql
+-- 수정 전
+WHERE embedding IS NOT NULL AND is_active = true
+  AND keyword_id = :keywordId            -- 타 keyword 차단
+  AND (embedding <=> ...) <= 0.3
+
+-- 수정 후
+WHERE embedding IS NOT NULL AND is_active = true
+  -- keyword_id 필터 제거: 의미적으로 유사한 타 keyword Criteria도 허용
+  AND (embedding <=> ...) <= 0.3
+```
+
+RRF 결과에 `keywordName`이 함께 반환되므로, AI 평가 서버가 도메인 경계를 인식하여 UPDATE/IGNORE를 최종 판단해야 함.
+
+### 37.6. 교훈 (Lesson Learned)
+
+- DB 트리거의 `UPDATE OF` 절은 **함수 내부에서 어떤 컬럼을 읽는지와 무관하게** 트리거 이벤트를 결정함. 트리거 함수 수정 시 `UPDATE OF` 절도 반드시 함께 검토해야 함.
+- `similarity`(높을수록 유사)와 `distance`(낮을수록 유사)는 의미가 반대. Native Query에서 두 개념 혼용 시 NULL 처리 기본값 오류로 이어짐. 반드시 하나의 기준으로 통일해야 함.
+- RRF 결과에 비-RRF 조회 결과를 수동 병합하면 랭킹 신뢰도가 훼손됨. RRF 쿼리 하나를 단일 진입점으로 유지해야 함.
+- Hybrid Search에서 FTS와 Semantic 브랜치는 **역할이 달라도 됨.** FTS는 도메인 어휘 정밀도, Semantic은 의미 유사성 탐색으로 분리하면 교차 도메인 지식 활용이 가능함.
