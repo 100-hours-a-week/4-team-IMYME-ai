@@ -56,7 +56,8 @@ class PairsService:
     def __init__(self, beam_size: int = 5, u_h: float = 0.6):
         self.beam_size = beam_size
         self.u_h = u_h
-        self.api_semaphore = asyncio.Semaphore(10)
+        # Rate Limit(429) 보호를 위해 동시성 제한을 매우 타이트하게(2) 조입니다.
+        self.api_semaphore = asyncio.Semaphore(2)
 
     # User prompt
     def _build_pairs_prompt(
@@ -87,8 +88,8 @@ class PairsService:
         )
 
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        stop=stop_after_attempt(10),
         reraise=True,
     )
     async def _call_with_logprobs(self, prompt: str, system_prompt: str) -> dict:
@@ -103,6 +104,8 @@ class PairsService:
         )
 
         async with self.api_semaphore:
+            # Rate Limit 방어: 최소 1초 대기하여 동시다발적 호출을 인위적으로 지연시킵니다.
+            await asyncio.sleep(1.0)
             response = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=settings.PAIRS_MODEL_ID,

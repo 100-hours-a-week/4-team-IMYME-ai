@@ -205,14 +205,10 @@ class RabbitMQService:
         """
         queue = await self.declare_and_bind_queue(queue_name)
 
-        # Per-consumer prefetch tuning:
-        #   STT queues   → prefetch=6
-        #   Other queues → prefetch=6  (Gemini-backed; no RunPod cap)
-        is_stt_queue = queue_name.endswith(".stt.request") or (
-            queue_name.endswith(".feedback.request") and "challenge" in queue_name
-        )
-        prefetch = 6 if is_stt_queue else 6
-        await queue.channel.set_qos(prefetch_count=prefetch)
+        # All consumers share the same prefetch_count=6.
+        # Previously a per-queue branch existed (STT vs others) but both paths
+        # returned 6, making it a dead branch. Simplified to a single constant.
+        await queue.channel.set_qos(prefetch_count=6)
 
         # Determine the response queue for publishing FAIL on final failure
         response_queue = REQUEST_TO_RESPONSE_QUEUE.get(queue_name)

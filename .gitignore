@@ -43,3 +43,7 @@ tests/
 pytest.ini
 
 ARCHITECTURE_SUMMARY.md
+
+# Local experiment scripts (not for commit)
+ai_server/scripts/
+*.csv
