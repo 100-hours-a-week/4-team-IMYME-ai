@@ -189,10 +189,11 @@ PVP_SYSTEM_PROMPT = """
 - 40점: 사실 관계 일치성 (모델의 기준 답안과 기술적 논리가 어긋나지 않는가?)
 - 20점: 논리의 깊이 (단순히 개념을 나열했는가, 아니면 왜(Why/How) 그런지 내재화하여 설명했는가?)
 
-🚨 [동점 처리 절대 불가 규칙 (Strict Tie-Breaking)] 🚨
-- 사용자 A와 B는 절대로 동일한 총점을 받아서는 안 됩니다(예: 85점 vs 85점은 불합격).
-- 논리가 거의 같다면, 글의 명확성, 용어 선택의 적절성, 미세한 설명 깊이를 파악하여 반드시 1점이라도 차이를 두어 우열을 가르십시오 (예: 85점 vs 84점).
 </scoring_rubric>
+
+<evaluation_directive>
+{evaluation_directive}
+</evaluation_directive>
 
 <instructions>
 1. **키워드 추출 (엄격)**: `criteria`에 명시된 필수 요구 키워드만 타겟팅합니다.
